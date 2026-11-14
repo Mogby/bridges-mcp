@@ -1,6 +1,6 @@
 # Bridges MCP design
 
-Implementation handoff · 2026-11-14
+Design and implementation constraints · 2026-11-14
 
 Bridges MCP connects external message sources to one Codex chat and gives the
 agent tools to communicate back. The first implementation is Telegram. Incoming
@@ -8,8 +8,8 @@ messages must join an active turn immediately or wake an idle chat. The project
 uses the user's Codex subscription, without an OpenAI API key.
 
 This document records the agreed product behavior and proposes concrete defaults
-where the discussion left implementation choices open. Existing code under
-`poc/` is experimental evidence, not a complete bridge implementation.
+where the discussion left implementation choices open. Current validation
+evidence and remaining acceptance checks are recorded in [docs/validation.md](docs/validation.md).
 
 ## Agreed scope
 
@@ -60,10 +60,9 @@ single-instance lock for each configured bridge instance; a second process must
 report the conflict rather than duplicate listeners. No general plugin loader or
 message broker is needed initially.
 
-Recommended implementation: asynchronous Python and a maintained MCP SDK. Reuse
-the proven IPC framing and metadata handling from `poc/`, but do not expand its
-handwritten partial MCP protocol into the production server. Language and SDK
-are implementation choices, not user requirements.
+Implementation: asynchronous Python and the official MCP SDK. Desktop IPC framing
+and host metadata handling live in the production transport and binding modules.
+Tests exercise those modules directly; no separate test bridge is required.
 
 ### Desktop deployment
 
@@ -160,7 +159,7 @@ Validate host-provided chat identity on all communication tool calls, not just
 bootstrap. A tool call from a different chat must not send through the bound
 instance or alter its typing tasks.
 
-The MCP startup handshake alone did not supply chat identity in the PoC. Require
+The MCP startup handshake alone does not supply chat identity. Require
 one initial user interaction in the selected chat to run bootstrap before
 starting external polling. On restart, an existing binding may be reused only
 after validating that its target is reachable. On VPS, the application already
@@ -342,7 +341,6 @@ never generate typing-status messages in the agent conversation.
 The turn ID must come from Codex metadata/lifecycle state, not an agent-supplied
 tool argument. If the transport cannot identify and observe the active turn,
 return a capability error for `True` rather than start an unbounded refresher.
-This lifecycle observation is additional work beyond the existing desktop PoC.
 
 ## Codex delivery
 
@@ -388,11 +386,10 @@ Idle delivery was separately verified through `codex queue --thread … --messag
 use queue as the default for every message or as fallback after an ambiguous
 steering failure.
 
-The implementation must add a desktop state/lifecycle observer so it can stop
-typing at turn completion and reconcile state. Prefer the owner's existing
-notifications/snapshot interface if available; do not read chat history on every
-typing refresh. Determine and test that interface before claiming full desktop
-support. The PoC did not implement it.
+The desktop state/lifecycle observer uses the owner's snapshot and revisioned
+patch stream to stop typing at turn completion and reconcile state. Do not read
+chat history on every typing refresh. Revalidate this private interface after
+desktop upgrades before claiming compatibility.
 
 For desktop idle wake-up, a state check followed by `codex queue` is not atomic:
 another actor may start a turn between those operations. Resolve this with a
@@ -403,8 +400,8 @@ outside the demonstrated support boundary.
 
 ## Evidence and remaining validation
 
-Tests used desktop-bundled Codex `0.169.0-alpha.11.1` on 2026-11-14. Full evidence
-and reproduction scripts are in [poc/README.md](poc/README.md).
+Tests used desktop-bundled Codex `0.169.0-alpha.11.1` on 2026-11-14. Current
+evidence and acceptance boundaries are in [docs/validation.md](docs/validation.md).
 
 | Behavior | Evidence |
 | --- | --- |
@@ -413,8 +410,8 @@ and reproduction scripts are in [poc/README.md](poc/README.md).
 | Loaded desktop idle chat wakes | Verified through CLI queue after prior turn completion |
 | Standalone `turn/steer` on a fresh idle chat | Verified rejection: `-32600`, `no active turn to steer` |
 | Standalone subscription login and active steering | Not yet integration-tested |
-| Desktop lifecycle observer and automatic active/idle routing | Not implemented |
-| Telegram tools, listeners, and typing lifecycle | Not implemented |
+| Desktop lifecycle observer and automatic active/idle routing | Implemented; live active subscription and steering verified, idle queue race documented |
+| Telegram tools, listeners, and typing lifecycle | Implemented; live sends/downloads/refresh verified, completion cancellation covered by deterministic tests |
 
 The idle App Server test used an isolated ephemeral chat without a model request.
 It establishes idle rejection, not subscription authentication or post-turn
@@ -422,11 +419,11 @@ reconnection behavior. Do not substitute it for a full VPS integration test.
 
 ## Implementation and acceptance
 
-Implement the Telegram registry, config validation, envelope encoder, handles,
-and tools first. Add binding and delivery using the PoC evidence, then turn
-lifecycle observation and typing. Complete the desktop path before describing it
-as plug and play. Keep the VPS path isolated until its full lifecycle is tested;
-do not advertise it as finished solely because the wire methods exist.
+The implementation includes the Telegram registry, config validation, envelope
+encoder, handles, tools, binding, delivery, lifecycle observation, and typing.
+Complete the desktop acceptance checks before describing it as plug and play.
+Keep the VPS path isolated until its full lifecycle is tested; do not advertise
+it as finished solely because the wire methods exist.
 
 Required checks:
 

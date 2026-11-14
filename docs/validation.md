@@ -7,9 +7,9 @@ notification fields. Schemas and extracted app bundles are not shipped here.
 
 ## Automated checks
 
-53 standard tests passed, plus the opt-in installed-App-Server check and all five
-legacy PoC tests. Ruff lint and formatting checks passed. The package built and
-its installed CLI entry point was exercised.
+53 standard tests passed, plus the opt-in installed-App-Server check. Ruff lint
+and formatting checks passed. The package built and its installed CLI entry point
+was exercised.
 
 The pytest suite exercises strict config/routing validation, token redaction,
 instance and bot locks, persistent binding, metadata conflicts, disabled tool
@@ -53,14 +53,13 @@ runtime artifacts, and downloaded files are excluded from version control.
 
 After the first live test, the user requested a presentation change: the metadata
 header is now a fenced YAML code block, with no `---` separator. Tests and the
-design document use this revised format. Historical PoC examples retain their
-original format as evidence, not as the production encoder.
+design document use this revised format.
 
 ## Remaining acceptance boundaries
 
-- Loaded desktop idle wake-up was verified in the earlier PoC, not repeated by
-  interrupting the current implementation chat. A state-check/queue race is tested
-  as a distinct delivery branch and documented; immediate steering is not
+- Loaded desktop idle wake-up was verified in an earlier desktop delivery check,
+  not repeated by interrupting the current implementation chat. A state-check/queue
+  race is tested as a distinct delivery branch and documented; immediate steering is not
   guaranteed if a different actor starts a turn in that narrow window.
 - Completion/failure/interruption cancellation is covered by deterministic
   lifecycle tests. The live typing smoke test exercised refresh and explicit

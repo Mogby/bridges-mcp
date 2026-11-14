@@ -22,8 +22,8 @@ handling still need an integrated VPS acceptance run. It preserves pending
 approval/input requests without answering them. It currently has no operator UI
 for resolving those requests; it must not be used to bypass your Codex policy.
 
-See [validation evidence and remaining checks](docs/validation.md), the
-[design](DESIGN.md), and the older [proof of concept](poc/README.md).
+See [validation evidence and remaining checks](docs/validation.md) and the
+[design](DESIGN.md).
 
 ## Install
 
@@ -225,7 +225,6 @@ must stay out of Git. Run these checks before changing the transport:
 .venv/bin/pytest -q
 .venv/bin/ruff check src tests
 .venv/bin/ruff format --check src tests
-python3 -m unittest discover -s poc -p 'test_*.py' -v
 ```
 
 The production server uses the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
