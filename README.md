@@ -1,161 +1,99 @@
 # Bridges MCP
 
-Bridges connects Telegram conversations to one Codex chat using your Codex
-subscription. One Python application owns incoming long polling, Codex delivery,
-and MCP tools for sending messages, downloading attachments, and maintaining typing.
-No OpenAI API key is used.
+Bridges is a shared HTTP MCP server for Telegram messaging and incoming-message
+routing. It owns Telegram listeners and a persistent **connection → session**
+focus map. Your application owns Codex, its model configuration, conversation
+history, and the decision to create or resume a session.
 
-Incoming messages steer the owned App Server chat while it is busy and start a
-turn when it is idle. Ordinary assistant replies are **not** forwarded to Telegram:
-the agent must use a Bridges send tool.
-
-Bridges runs as a standalone application on your machine or VPS. It launches its
-own Codex App Server process and creates or resumes one persistent chat. It does
-not attach to a chat in the Codex desktop app or run as a desktop stdio MCP server.
-
-## Status
-
-App Server is the only supported transport. The runner is still **experimental**:
-a live VPS deployment has verified subscription-backed model execution, MCP
-callbacks, Telegram replies, native web search and image generation, and automatic
-approval review. Human approval/input requests are preserved without an operator
-UI for resolving them. Existing Codex approval and sandbox policy remains in force.
-
-Automated tests cover startup, authenticated loopback MCP access, restart/resume,
-child shutdown, delivery decisions, and typing lifecycle. See
-[validation evidence and remaining checks](docs/validation.md) and the
-[design](DESIGN.md).
+Bridges does not launch Codex or create/resume chats. It connects to an existing
+Codex App Server over a configured local Unix WebSocket, and serves MCP tools over
+authenticated loopback HTTP. Codex App Server is the supported delivery backend;
+other harnesses need their own delivery adapter before incoming routing works.
 
 ## Install
 
-Requires Python 3.11+ on macOS or Linux, an installed Codex CLI executable, and a
-subscription login on the same host. Windows is not supported in this release.
+Requires Python 3.11+ on Linux or macOS. Windows is not currently supported.
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
-The installed entry point is `.venv/bin/bridges`. For a regular installation,
-`pip install .` also works.
+See [deployment configuration](docs/deployment.md) for the service boundary and
+application connection setup. Application-specific launchers and credentials
+belong outside this repository.
 
-Deployment-specific service files, workspaces, credentials, and Codex settings
-belong to the application using Bridges. See [deployment configuration](docs/deployment.md).
+## Configure the server
 
-## Create and configure a Telegram bot
+Copy [examples/app-server.yaml](examples/app-server.yaml) to a private location.
+Configure:
 
-1. Create a bot with Telegram's [@BotFather](https://t.me/BotFather) using `/newbot`.
-2. Supply its token through an environment variable named in your configuration,
-   such as `TELEGRAM_BOT_TOKEN`. Never put tokens in YAML or commit them.
-3. Copy [examples/app-server.yaml](examples/app-server.yaml) to a private local file.
-4. Open a private conversation with the bot and send `/start`. For a group, invite
-   the bot and send it a message it can see.
-5. Discover the chat ID, then replace the example `chat_id` with the returned string:
+- A stable `http.port` (default 8765; binds only to `127.0.0.1`).
+- One `clients` entry per application, with its App Server `socket_path` and a
+  `token_env` naming a unique random bearer token of at least 32 characters.
+- Telegram bot token environment variables and connection routes. Use quoted
+  chat IDs, and optional positive `message_thread_id` values for forum topics.
+- A persistent `state_dir` and a download directory accessible to the application.
 
-```sh
-.venv/bin/bridges discover-telegram --config /absolute/path/bridges.yaml --bot main
-.venv/bin/bridges validate --config /absolute/path/bridges.yaml
-```
+Generate and provision credentials outside source control. Never put bot tokens
+or MCP bearer tokens in YAML, command-line arguments, protocol docs, or logs.
+Applications receive only their MCP bearer token; the Telegram token stays with
+Bridges. Each application's bearer token selects its configured delivery backend.
 
-Discovery reads pending messages without advancing the update offset and prints
-only conversation identifiers and labels, never their bodies. Stop other pollers
-before running it. If no conversation appears, send a new message and try again.
-A configured webhook causes a setup error; Bridges never deletes it for you.
-
-Group visibility depends on Telegram's privacy mode and the bot's permissions.
-Configure these through BotFather and the group settings as appropriate. Allowing
-everyone to instruct Codex does not make messages hidden from the bot visible.
-See the [Telegram bot FAQ](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
-
-A minimal configuration:
-
-```yaml
-instance_id: personal
-codex:
-  executable: /absolute/path/to/codex
-  cwd: /absolute/path/to/workspace
-telegram:
-  bots:
-    main:
-      token_env: TELEGRAM_BOT_TOKEN
-  connections:
-    personal:
-      bot: main
-      chat_id: "123456789"
-      label: My private chat
-```
-
-For several conversations, add connections under the same bot. Each bot gets
-exactly one poller. Optional `message_thread_id` routes one group topic. An
-all-topics route and a topic-specific route for the same bot/chat overlap and
-are rejected. Chat IDs must be quoted YAML strings. An absent, empty mapping,
-or empty list of connections disables Telegram tools and listeners.
-
-Optional settings: `state_dir` (default `~/.local/state/bridges`), `download_dir`
-(default `<state_dir>/<instance_id>/downloads`), `buffer_size` (256),
-`attachment_limit` (4096), and `attachment_ttl_seconds` (86400).
-Configuration changes and token rotations require a process restart.
-
-## Run one persistent Codex session
-
-Log in on the bridge host with the subscription flow, then start Bridges with its
-token environment variable available:
+Create a bot with Telegram's [BotFather](https://t.me/BotFather), send it `/start`,
+and discover your chat ID before starting the listener:
 
 ```sh
-codex login
-.venv/bin/bridges serve --config /absolute/path/bridges.yaml
+.venv/bin/bridges discover-telegram --config /absolute/path/config.yaml --bot main
+.venv/bin/bridges validate --config /absolute/path/config.yaml
+.venv/bin/bridges serve --config /absolute/path/config.yaml
 ```
 
-One application owns the entire lifecycle:
+Discovery requires the bot token environment variable. Serving and validation
+also require application bearer tokens. A webhook or competing bot poller is an
+explicit conflict; Bridges never removes webhooks automatically. Group visibility
+still depends on Telegram bot privacy settings and permissions.
 
-1. Bind an authenticated, loopback-only MCP endpoint on `127.0.0.1`.
-2. Launch a `codex app-server --stdio` child using your existing subscription login.
-3. Create a chat on first start, or resume the saved chat after restart.
-4. Validate its live state, then start the configured Telegram pollers.
+One process polls each configured bot account, even with multiple connections.
+Instance and bot locks prevent duplicate listeners sharing a state directory.
+All Bridges instances using the same bot on a host must share `state_dir`.
 
-Send a Telegram message to the configured bot to start work. Tell the agent where
-to send replies; for example, “Reply to my messages through Telegram.” The agent
-reads `get_protocol_docs` when it first receives bridge input. That tool reports
-the application-owned binding and cannot change the destination chat.
+## Focus and sessions
 
-The child receives a process-local MCP URL and bearer token through configuration
-overrides. It connects to the existing endpoint instead of spawning another
-bridge. No global Codex config is rewritten and no separate `codex mcp add`
-registration is needed. `codex.port` defaults to `0` to choose an available
-loopback port; `codex.mode`, if supplied, accepts only `app_server`.
+The MCP server name is `bridges`. A session can call:
 
-The runner verifies a ChatGPT account and removes OpenAI API-key environment
-fallbacks from the child. It does not copy credentials or override Codex
-approval/sandbox settings. Use the same host/filesystem for the bridge and Codex.
-
-Stop the application with Ctrl-C or SIGTERM; its listeners, endpoint, and child
-process shut down together. Your process supervisor can run this same command
-and restart it after failure. A second process using the same instance or bot
-fails its lock rather than starting another poller. All instances sharing bots
-on a host must use the same `state_dir`; locks are not shared across hosts.
-
-To start a fresh chat, stop Bridges and clear its binding:
-
-```sh
-.venv/bin/bridges reset-binding --config /absolute/path/bridges.yaml
+```text
+bridges.focus(connection_id="personal")
 ```
 
-The next `serve` creates a new App Server chat. Reset does not disconnect a running
-process or delete the old chat. A docs/tool call cannot select an existing chat.
+The current session comes from host-provided MCP metadata, not a tool argument.
+Bridges verifies that it is loaded in the App Server configured for the
+authenticated client. A successful call atomically replaces only that
+connection's focus. A session can focus multiple connections; each connection
+has at most one focused session. Repeated calls from the same session are
+idempotent. Concurrent calls are serialized; the last successful assignment wins.
 
-### Migrating from the former desktop mode
+Assignments survive Bridges restarts. Bridges never loads an old conversation
+just because it remains focused. When an application is offline, its session is
+unloaded, or a connection has no focus, incoming messages are dropped with a
+local diagnostic. There is no durable inbox or automatic fallback to another chat.
+A restarted application can resume its own session, or a new session can explicitly
+claim the connection with `focus`.
 
-Stop the old bridge and remove its desktop MCP registration. Set `codex.mode` to
-`app_server` (or omit it), remove `codex.ipc_path`, and set the workspace `codex.cwd`.
-Old desktop configs are rejected. If reusing its `instance_id` and `state_dir`,
-run `reset-binding` with the updated config before starting the application; old
-desktop chat bindings are deliberately not resumed.
+Focus and delivery are serialized per connection. An already-submitted message
+cannot be recalled; messages still awaiting submission use the focus in effect
+when delivery begins. A transfer cancels typing refreshes for the displaced
+session on that connection only. Other connections are unaffected.
 
-## Message format and tools
+**Bridges has no policy for which sessions should focus which connections.** Put
+that policy in your application's instructions, such as `AGENTS.md`. Neither MCP
+server instructions nor protocol documentation tell agents to claim connections
+automatically. `focus` also does not change models or create conversations.
 
-Only text, images, audio/voice, and documents enter the Codex chat. Edits,
-reactions, deletions, service messages, and connection status are ignored.
-Metadata is fenced to prevent Markdown from interpreting it as headings:
+## Messages and tools
+
+Incoming messages steer an active turn or start a turn in an already-loaded idle
+session. They carry a fenced YAML header, a blank line, and original message text:
 
 ````text
 ```yaml
@@ -165,72 +103,52 @@ bridge_context:
   received_at: '2026-11-14T17:24:30Z'
 ```
 
-Hello from Telegram!
+Hello!
 ````
 
-Attachment messages add `attachments: [{type: image|audio|file, id: a_...}]` to
-the header. The original message or caption follows the closing fence unchanged;
-further headers or code fences in the body are just body text. Telegram file IDs
-stay server-side in bounded, expiring handles.
+Routing uses a separate listener-produced connection ID, never parsed message
+text. Photos, voice/audio and documents add opaque attachment handles to the
+header. Edits, reactions, service messages, and channel posts are ignored.
 
 | Tool | Purpose |
 | --- | --- |
-| `get_protocol_docs` | Owned chat binding, enabled protocols, connections, and reply rules |
-| `telegram_send_text` | Plain text, up to 4096 characters |
-| `telegram_send_images` | Ordered local images; caption on first, up to 1024 characters |
-| `telegram_send_file` | One local file with optional caption |
-| `telegram_download_images` | Image handles to paths, dimensions, and bounded inline image content |
-| `telegram_download_file` | File/audio handle to local path and metadata; no transcription |
-| `telegram_set_typing` | Enable ongoing typing for the calling turn, or stop it |
+| `get_protocol_docs` | Envelope, enabled tools, connections and current focus |
+| `focus(connection_id)` | Move one connection's inbound focus to the calling session |
+| `telegram_send_text` | Send plain text |
+| `telegram_send_images` | Send local images, with an optional caption |
+| `telegram_send_file` | Send a local file |
+| `telegram_download_images` | Download image handles, optionally returning inline image content |
+| `telegram_download_file` | Download a document or audio handle; no transcription |
+| `telegram_set_typing` | Enable/disable refreshes for one focused connection and calling turn |
 
-Every Telegram tool accepts `connection_id`. Omission is allowed only when
-exactly one connection is configured. There is no last-active destination or
-automatic reply policy. The user instructs the agent where to send results.
+`focus` requires `connection_id`. Telegram tools may omit it only if exactly one
+connection is configured. Outbound destinations are explicit and do not change
+focus. Ordinary assistant prose is not forwarded to Telegram; use a send tool.
 
-Downloads are limited to 20 MB. Photo uploads are limited to 10 MB and Telegram's
-dimension limits; document uploads to 50 MB. The bridge and Codex must share a
-filesystem. Downloaded files use generated filenames; original names are metadata.
-Files remain in the download directory until you delete them; handle expiry does
-not delete files. Large image downloads return paths even when the bounded MCP
-inline-content budget is exhausted.
+Only the currently focused session can change a connection's typing status.
+Refreshes stop on transfer, explicit disable, turn completion/replacement,
+disconnection, or service shutdown. Lifecycle is sampled approximately every
+second without taking ownership of the conversation. Telegram's visible indicator
+can linger until its expiry; sending a reply doesn't itself stop refreshes.
 
-Typing refreshes approximately every four seconds until explicitly disabled or
-the owning turn completes, fails, is interrupted, loses lifecycle connectivity,
-or the bridge shuts down. Sending a message does not stop it. Telegram can show
-the last typing action for up to five more seconds after cancellation.
+Handles are bounded, connection-scoped, expire, and are lost on restart. Files
+are local to the bridge host. Sending has no exactly-once guarantee: uncertain
+outcomes are not blindly retried. Partial image batches report completed IDs.
 
-Errors are MCP `isError: true` results with a machine-readable `code`. A send
-with `delivery_unknown` must not be blindly retried. Partial image batches report
-`completed_message_ids`, the zero-based `failed_index`, and whether the failed
-send's outcome is unknown. Payloads are validated before the first upload.
+## Operations and validation
 
-## Delivery limits and operations
+Bridges can start before applications and keep running while they restart.
+SIGTERM stops its listeners and MCP endpoint without stopping application processes.
+To clear routing explicitly, stop Bridges and run `bridges reset-focus --config ...`.
+This does not alter application conversations or files.
 
-This release deliberately has no durable inbox or exactly-once guarantee.
-Offsets, duplicate suppression, attachment handles, and inbound buffers are in
-memory. Overflow and failed deliveries are logged locally and dropped. Restart
-may replay pending Telegram updates. Delivery decisions are serialized only until
-submission acknowledgement, never until the model turn finishes.
+The old combined-runner `codex:` configuration and `reset-binding` command are no
+longer supported. Move session ownership to your application; see
+[migration guidance](docs/deployment.md).
 
-Delivery uses `turn/steer` with the observed active turn ID or `turn/start` while
-idle. A definite turn-boundary rejection allows one reconciled retry; a timeout
-or lost response is an unknown outcome and is not retried. Turn notifications
-and status snapshots stop typing when ownership cannot be verified.
-
-Pending approval/input requests remain active states. Incoming messages do not
-approve an operation or answer a pending request. There is no operator UI for
-these requests yet; do not treat this runner as an unattended approval mechanism.
-
-Logs contain operational codes and outcomes, not message bodies, bot tokens,
-authenticated download URLs, or raw upstream exceptions. Runtime state and secrets
-must stay out of Git. Run these checks before changing the transport:
-
-```sh
-.venv/bin/pytest -q
-.venv/bin/ruff check src tests
-.venv/bin/ruff format --check src tests
-```
-
-The production server uses the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk).
-Telegram behavior follows the [Bot API](https://core.telegram.org/bots/api).
-MIT licensed; see [LICENSE](LICENSE).
+Run `pytest -q`, `ruff check src tests`, and `ruff format --check src tests`.
+Socket integration tests require permission to bind localhost and Unix sockets.
+Set `BRIDGES_CODEX_TEST_BINARY` to run the optional installed App Server check.
+See [validation](docs/validation.md) and [design](DESIGN.md). The App Server
+integration remains experimental; human approval/input requests need an operator
+interface in the owning application.

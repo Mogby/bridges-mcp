@@ -3,25 +3,32 @@ import json
 from unittest.mock import AsyncMock
 
 import httpx
+import pytest
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.routing import Route
+from websockets.asyncio.server import unix_serve
 
 from bridges.cli import BearerEndpoint
+from bridges.config import Client
 from bridges.server import create_server
-from bridges.transports.app_server import AppServerTransport
+from bridges.transports.app_server import AppServer, AppServerSession
 from bridges.transports.base import TurnState
 from bridges.transports.rpc import RPC
 
 
-async def test_loopback_endpoint_auth_and_mcp_callbacks(runtime):
-    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
+async def test_http_auth_focus_and_host_identity(runtime):
+    await runtime.start()
     manager = StreamableHTTPSessionManager(
         create_server(runtime), json_response=True, stateless=True
     )
     app = Starlette(
         routes=[
-            Route("/mcp", BearerEndpoint(manager, "test-bearer"), methods=["POST", "GET", "DELETE"])
+            Route(
+                "/mcp",
+                BearerEndpoint(manager, {"app": "test-bearer"}),
+                methods=["POST", "GET", "DELETE"],
+            )
         ]
     )
     async with (
@@ -31,90 +38,75 @@ async def test_loopback_endpoint_auth_and_mcp_callbacks(runtime):
         ) as client,
     ):
         message = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
-        denied = await client.post("/mcp", json=message)
-        assert denied.status_code == 401
+        assert (await client.post("/mcp", json=message)).status_code == 401
         headers = {
             "Authorization": "Bearer test-bearer",
             "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": "2025-11-25",
         }
-        listed = await client.post("/mcp", json=message, headers=headers)
-        assert listed.status_code == 200
-        assert len(listed.json()["result"]["tools"]) == 7
-        response = await client.post(
-            "/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "get_protocol_docs",
-                    "arguments": {},
-                    "_meta": {"threadId": "chat"},
+        listed = (await client.post("/mcp", json=message, headers=headers)).json()["result"][
+            "tools"
+        ]
+        assert len(listed) == 8
+        focus = next(t for t in listed if t["name"] == "focus")
+        assert focus["inputSchema"]["required"] == ["connection_id"]
+
+        async def call(name, args, meta):
+            response = await client.post(
+                "/mcp",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": args, "_meta": meta},
                 },
-            },
-            headers=headers,
+            )
+            return response.json()["result"]
+
+        result = await call(
+            "focus", {"connection_id": "one"}, {"threadId": "chat", "client_id": "attacker"}
         )
-        assert not response.json()["result"]["isError"]
-        rejected = await client.post(
-            "/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": "telegram_send_text",
-                    "arguments": {"text": "no", "connection_id": "one"},
-                    "_meta": {"threadId": "other"},
-                },
-            },
-            headers=headers,
-        )
-        assert rejected.json()["result"]["isError"]
+        assert not result["isError"] and result["structuredContent"]["client_id"] == "app"
+        assert (await call("focus", {"connection_id": "one"}, {}))["isError"]
+        assert (await call("focus", {"connection_id": "one"}, {"threadId": "unloaded"}))["isError"]
+        assert (await call("focus", {}, {"threadId": "chat"}))["isError"]
+        assert (
+            await call(
+                "focus", {"connection_id": "one", "thread_id": "other"}, {"threadId": "chat"}
+            )
+        )["isError"]
+        docs = await call("get_protocol_docs", {}, {"threadId": "other"})
+        assert docs["structuredContent"]["focus"]["one"]["thread_id"] == "chat"
+        assert "focus(" not in docs["structuredContent"]["instructions"]
+        assert "focus(" not in create_server(runtime).instructions
 
 
-class Writer:
-    def __init__(self):
-        self.data = []
+async def test_websocket_rpc_multiplexing_and_disconnect(socket_path):
+    path = socket_path
+    notifications, lost = [], []
 
-    def write(self, data):
-        self.data.append(data)
+    async def handler(socket):
+        request = json.loads(await socket.recv())
+        await socket.send(json.dumps({"method": "turn/started", "params": {}}))
+        await socket.send(json.dumps({"id": request["id"], "result": {"ok": True}}))
+        await socket.recv()
 
-    async def drain(self):
-        pass
+    from websockets.asyncio.client import unix_connect
 
-    def close(self):
-        pass
-
-    async def wait_closed(self):
-        pass
-
-
-async def test_rpc_notification_multiplexing_and_lost_response():
-    reader, writer, notifications, lost = asyncio.StreamReader(), Writer(), [], []
-    rpc = RPC(
-        reader, writer, on_event=notifications.append, on_disconnect=lambda: lost.append(True)
-    )
-    request = asyncio.create_task(rpc.request("method", {}))
-    await asyncio.sleep(0)
-    request_id = json.loads(writer.data[0])["id"]
-    reader.feed_data(json.dumps({"method": "turn/started", "params": {}}).encode() + b"\n")
-    reader.feed_data(json.dumps({"id": request_id, "result": {"ok": True}}).encode() + b"\n")
-    assert await request == {"ok": True} and len(notifications) == 1
-    pending = asyncio.create_task(rpc.request("other", {}))
-    await asyncio.sleep(0)
-    reader.feed_eof()
-    import pytest
-
-    with pytest.raises(ConnectionError):
-        await pending
-    assert lost
-    await rpc.close()
+    async with unix_serve(handler, path):
+        socket = await unix_connect(path, uri="ws://localhost")
+        rpc = RPC(socket, on_event=notifications.append, on_disconnect=lambda: lost.append(True))
+        assert await rpc.request("method", {}) == {"ok": True}
+        assert notifications
+        with pytest.raises(ConnectionError):
+            await rpc.request("lost", {})
+        assert lost
+        await rpc.close()
 
 
-async def test_completed_turn_not_resurrected_by_start_ack(config):
-    transport = AppServerTransport(config.codex)
-    transport.thread_id = "chat"
+async def test_completed_turn_not_resurrected_by_start_ack():
+    transport = AppServerSession(AsyncMock(), "chat")
     transport.snapshot = AsyncMock(return_value=TurnState("idle"))
 
     async def request(method, params):
@@ -126,7 +118,50 @@ async def test_completed_turn_not_resurrected_by_start_ack(config):
         )
         return {"turn": {"id": "fast", "status": "inProgress"}}
 
-    transport.rpc = AsyncMock()
-    transport.rpc.request.side_effect = request
+    transport.backend.rpc.request.side_effect = request
     assert (await transport.deliver("hello")).outcome == "accepted"
     assert transport.state == TurnState("idle")
+
+
+async def test_independent_app_server_disconnect_reconnect_and_no_resume(socket_path):
+    path = socket_path
+    methods = []
+
+    async def handler(socket):
+        async for line in socket:
+            request = json.loads(line)
+            method = request["method"]
+            methods.append(method)
+            if "id" not in request:
+                continue
+            if method == "initialize":
+                result = {}
+            elif method == "thread/read":
+                thread = request["params"]["threadId"]
+                result = {
+                    "thread": {
+                        "id": thread,
+                        "status": {"type": "notLoaded" if thread == "offline" else "idle"},
+                    }
+                }
+            elif method == "turn/start":
+                result = {"turn": {"id": "turn", "status": "inProgress"}}
+            else:
+                raise AssertionError(method)
+            await socket.send(json.dumps({"id": request["id"], "result": result}))
+
+    backend = AppServer(Client(token_env="TOKEN", socket_path=path))
+    try:
+        for _ in range(2):
+            async with unix_serve(handler, path):
+                session = await backend.session("one")
+                assert (await session.deliver("text")).outcome == "accepted"
+                from bridges.errors import BridgeError
+
+                with pytest.raises(BridgeError):
+                    await backend.session("offline")
+            await asyncio.sleep(0.01)
+            assert session.state.status == "disconnected"
+        assert "thread/start" not in methods and "thread/resume" not in methods
+    finally:
+        await backend.close()

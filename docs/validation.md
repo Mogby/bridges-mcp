@@ -1,105 +1,65 @@
-# Validation record
+# Validation
 
-Implementation and local validation: 2026-11-14. App Server is the only supported
-Codex transport. Installed Codex version checked: `0.169.0-alpha.11.1`. Its generated
-JSON schema was inspected for initialization, thread creation/read/resume/turn
-pagination, start/steer, and lifecycle notification fields. Generated schemas are
-not shipped here.
+## Automated coverage
 
-## Automated checks
+Tests exercise persistent single-target focus, two connections routed to different
+sessions, switching a connection without affecting another, idempotence,
+concurrent focus calls, transfer serialized with in-flight delivery, persistence
+failures, invalid/unauthenticated callers, and unloaded applications. Unfocused
+messages are dropped without an implicit fallback.
 
-58 tests passed, including the installed-App-Server check and localhost process
-integration tests. Ruff lint and formatting checks also passed.
+Real authenticated HTTP MCP round trips verify that the bearer token selects the
+application, caller metadata selects its session, explicit session arguments are
+rejected, and focus requires a connection ID. Protocol instructions do not tell
+agents to claim connections. In-memory SDK tests verify schemas and reject calls
+without HTTP authentication context.
 
-The pytest suite exercises configuration/routing validation, token redaction,
-instance and bot locks, persistent App Server binding, metadata conflicts,
-disabled tool visibility, every inbound media mapping, ignored update kinds,
-handle expiry and connection scope, bounded bursts, one poller per bot, offsets
-and duplicates, webhook conflict, payload limits, partial sends, ambiguous sends
-without retry, download metadata and paths, and MCP initialization/discovery/tools.
+Unix WebSocket fixtures verify RPC multiplexing, disconnects, reconnects, and that
+Bridges never calls thread/start or thread/resume. Process tests launch the actual
+Bridges CLI without Codex or application sockets and exercise HTTP access,
+shutdown, and restart. The optional BRIDGES_CODEX_TEST_BINARY test attaches to a
+real independently launched App Server and confirms closing Bridges's connection
+does not stop that process. These tests require local socket permissions.
 
-App Server is the default and only accepted mode. Removed transport settings and
-old bindings are rejected. Startup creates or resumes the application's chat,
-verifies live state, and persists its binding before polling starts. An MCP call
-cannot claim or redirect the session, even while startup is in progress. Tests
-cover these conditions and startup failures without starting listeners.
+Deterministic lifecycle tests cover typing refreshes, independent connections,
+idempotence, in-flight cancellation, focus-transfer cleanup, stale-session typing
+rejection, completion/replacement/disconnection, active steering, idle start,
+known turn-boundary retries and ambiguous delivery without retry.
 
-A fake clock exercises typing across refresh intervals, idempotent enable/disable,
-two connections, cancellation during an in-flight action, turn replacement,
-completion/interruption, disconnect, and outbound sends. Transport fixtures cover
-active steering, idle start, uncertain outcomes without retry, a definite
-turn-boundary rejection with one bounded retry, stale completion events, and
-approval/input states remaining active without being answered.
+Telegram tests cover supported input normalization, separate trusted routing
+metadata, duplicate updates, overlapping routes, webhook conflicts, payload
+limits, partial/uncertain sends, downloads, and bounded expiring attachment handles.
 
-MCP tests use the official SDK in memory and the authenticated HTTP endpoint.
-Process integration tests launch the actual CLI with a fake Codex executable and
-real localhost HTTP connections. They verify:
+## Independent-service live evidence
 
-- The endpoint is reachable and requires a bearer token before the child initializes.
-- API-key environment variables are removed from the child.
-- One application creates the first chat and resumes that same binding on restart.
-- MCP calls from the owned chat succeed; calls from another chat are rejected.
-- SIGTERM shuts down the application and its child without leaving an orphan.
-- Missing subscription login produces a concise error, creates no binding, and
-  releases the child process.
+On 2026-11-14, the deployed independent HTTP service accepted a real model's
+`focus` call using authenticated client identity and Codex host session metadata.
+The assignment persisted on disk, and the model successfully sent a Telegram
+reply and controlled typing for that connection.
 
-The fake executable is a test fixture, not a bridge type or an installed server.
-It makes no model request and uses no real subscription credentials or Telegram
-connection. These process tests require permission to open localhost sockets.
+Restarting each service independently preserved the focus map and application
+session ID, left the other service's process unchanged, and restored authenticated
+MCP access. This exposed and fixed a TCP TIME_WAIT restart issue; the process test
+now stops the server with a keep-alive client still connected before rebinding.
 
-The optional `BRIDGES_CODEX_TEST_BINARY` test launches the real installed App Server
-with an isolated, unauthenticated `CODEX_HOME`. It verifies that subscription login
-is required and that the child shuts down, without making a model request.
+The application also successfully spawned a subagent, which ran `pwd` in its
+configured workspace and completed. No experimental feature toggle was needed.
+After restart, the application reported `gpt-6.1-sol`, high reasoning effort,
+automatic approval review, and live web search from its own configuration.
 
-## Telegram API smoke-test evidence
+## Historical live evidence
 
-The user supplied a test bot token locally and sent a message to the bot. Earlier
-live checks verified the Telegram components shared by the current implementation:
-all three send tools, both download tools, inline MCP image content, file-byte
-integrity, and three acknowledged typing actions across two refresh intervals.
-Outbound sends did not stop typing. The harness explicitly disabled typing and
-closed its listeners and clients. The user then rotated the token.
+Earlier live checks verified Telegram send/download tools, inline images, typing,
+and subscription-backed model-originated MCP calls. The previous combined runner
+also verified native web search, image generation, automatic approval review, and
+replies following restart. Those results cover shared components; they do not by
+themselves establish the independent-service focus lifecycle.
 
-Those checks used the former desktop transport. That transport and its tests
-have been removed, and its steering results do not establish App Server delivery.
-Tokens, private chat identifiers, test artifacts, and downloaded files remain
-excluded from version control. The current envelope uses a fenced YAML metadata
-header, with no `---` separator, as requested after the initial smoke test.
+## Remaining boundaries
 
-## Live App Server VPS acceptance
-
-On 2026-11-14, a subscription-backed Ubuntu 24.04 deployment using Codex 0.169.0
-received a real Telegram message, started the bound session, and successfully
-called both protocol documentation and Telegram send tools with host-attributed
-MCP metadata. The Telegram API acknowledged the model-originated reply.
-
-Separate model-backed smoke tests using the service CODEX_HOME and workspace
-verified shell writes, native web search, and native image generation with a PNG
-saved to disk. An explicitly escalated read-only command completed with automatic
-approval review. App Server config and thread responses independently confirmed
-the working directory, reviewer, approval policy, and workspace-write sandbox.
-Systemd restart shut down cleanly and resumed the same bound thread. Three
-subsequent inbound messages each produced a successful model-originated Telegram
-send through MCP, verifying that the renewed endpoint works after resume.
-The tested bot's service files and private configuration live outside this repository.
-
-## Remaining acceptance boundaries
-
-- Live Telegram steering during an active model turn still needs an explicit
-  integrated acceptance check. Idle wake-up, model execution, MCP callbacks,
-  and replies after restart have passed the live deployment checks above.
-- Pending approvals/input are preserved, but there is no operator UI for resolving
-  them. Incoming messages must never answer or approve these requests implicitly.
-- Completion/failure/interruption typing cancellation is covered by deterministic
-  lifecycle tests. The live Telegram test exercised refresh and explicit disable.
-- Live attachment download handles came from the bot's acknowledged uploads.
-  Real inbound media normalization is covered by fixtures; every Telegram media
-  type has not yet been tested live.
-- Discord, cron, transcription, album coalescing, durable replay, and a shared
-  multi-client daemon remain outside v1 scope.
-
-For live acceptance, run one application with a dedicated configured chat and bot,
-send text/media while its owned App Server chat is active and idle, inspect the
-turn IDs, then enable typing and finish or interrupt its owning turn. Never retry
-an unknown delivery just to make a test pass. Inspect operational outcomes without
-dumping bodies, credentials, or Telegram download URLs.
+The integration uses the installed Codex App Server protocol. Other harnesses
+need delivery adapters. Human approval/input requests need an operator interface
+in the owning application. There is no durable inbox, transcription, album
+coalescing, Discord/cron implementation, or distributed cross-host poller lock.
+No model-generated instruction is used to auto-focus a connection. Application
+instructions own that policy.

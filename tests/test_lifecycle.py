@@ -5,7 +5,7 @@ import pytest
 from conftest import FakeTransport
 
 from bridges.errors import BridgeError
-from bridges.transports.app_server import AppServerTransport
+from bridges.transports.app_server import AppServerSession
 from bridges.transports.base import TurnState
 from bridges.transports.rpc import RPCRejected
 from bridges.typing import TypingManager
@@ -92,24 +92,25 @@ async def test_typing_cancellation_waits_for_inflight_refresh():
 
 
 async def test_outbound_send_does_not_stop_typing(runtime):
-    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
+    await runtime.start()
+    await runtime.call("focus", {"connection_id": "one"}, {"threadId": "chat"}, "app")
     enabled = await runtime.call(
         "telegram_set_typing",
         {"connection_id": "one", "enabled": True},
         {"threadId": "chat", "turnId": "turn-1"},
+        "app",
     )
     assert not enabled.isError
     await runtime.call(
-        "telegram_send_text", {"connection_id": "one", "text": "done"}, {"threadId": "chat"}
+        "telegram_send_text", {"connection_id": "one", "text": "done"}, {"threadId": "chat"}, "app"
     )
-    assert "one" in runtime.typing.owners
-    runtime.transport.update(TurnState("idle"))
-    assert not runtime.typing.owners
+    assert "one" in runtime.typing[("app", "chat")].owners
+    runtime.backends["app"].sessions["chat"].update(TurnState("idle"))
+    assert not runtime.typing[("app", "chat")].owners
 
 
 async def test_stale_completion_cannot_stop_new_turn_typing(config):
-    transport = AppServerTransport(config.codex)
-    transport.thread_id = "chat"
+    transport = AppServerSession(AsyncMock(), "chat")
     transport.snapshot = AsyncMock(side_effect=lambda: transport.state)
     transport.update(TurnState("active", "new"))
     manager = TypingManager(transport, AsyncMock())
@@ -132,9 +133,8 @@ async def test_stale_completion_cannot_stop_new_turn_typing(config):
 
 
 async def test_app_server_active_idle_and_known_race(config):
-    transport = AppServerTransport(config.codex)
-    transport.thread_id = "chat"
-    transport.rpc = AsyncMock()
+    transport = AppServerSession(AsyncMock(), "chat")
+    transport.backend.rpc = AsyncMock()
     transport.snapshot = AsyncMock(side_effect=[TurnState("active", "old"), TurnState("idle")])
     transport.rpc.request.side_effect = [
         RPCRejected({"error": {"code": -32600, "message": "no active turn to steer"}}),
@@ -150,9 +150,8 @@ async def test_app_server_active_idle_and_known_race(config):
 
 
 async def test_app_server_unknown_response_no_retry(config):
-    transport = AppServerTransport(config.codex)
-    transport.thread_id = "chat"
-    transport.rpc = AsyncMock()
+    transport = AppServerSession(AsyncMock(), "chat")
+    transport.backend.rpc = AsyncMock()
     transport.snapshot = AsyncMock(return_value=TurnState("idle"))
     transport.rpc.request.side_effect = TimeoutError()
     assert (await transport.deliver("body")).outcome == "unknown"
@@ -160,10 +159,9 @@ async def test_app_server_unknown_response_no_retry(config):
 
 
 async def test_approval_and_input_requests_preserve_active_state(config):
-    transport = AppServerTransport(config.codex)
-    transport.thread_id = "chat"
+    transport = AppServerSession(AsyncMock(), "chat")
     transport.update(TurnState("active", "turn"))
-    transport.rpc = AsyncMock()
+    transport.backend.rpc = AsyncMock()
     for method in ["item/commandExecution/requestApproval", "item/tool/requestUserInput"]:
         transport.event(
             {"id": method, "method": method, "params": {"threadId": "chat", "turnId": "turn"}}

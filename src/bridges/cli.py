@@ -21,25 +21,33 @@ from .runtime import Runtime
 from .server import create_server
 from .state import InstanceState
 from .telegram import TelegramAPI
-from .transports.app_server import AppServerTransport
 
 
 class BearerEndpoint:
-    def __init__(self, manager, bearer):
-        self.manager, self.bearer = manager, bearer
+    def __init__(self, manager, tokens):
+        self.manager, self.tokens = manager, tokens
 
     async def __call__(self, scope, receive, send):
         headers = dict(scope.get("headers", []))
-        expected = ("Bearer " + self.bearer).encode()
-        if not secrets.compare_digest(headers.get(b"authorization", b""), expected):
+        client_id = next(
+            (
+                name
+                for name, token in self.tokens.items()
+                if secrets.compare_digest(
+                    headers.get(b"authorization", b""), ("Bearer " + token).encode()
+                )
+            ),
+            None,
+        )
+        if client_id is None:
             await send({"type": "http.response.start", "status": 401, "headers": []})
             await send({"type": "http.response.body", "body": b"Unauthorized"})
             return
+        scope["bridges_client"] = client_id
         await self.manager.handle_request(scope, receive, send)
 
 
-async def run_app_server(runtime, server):
-    bearer = secrets.token_urlsafe(32)
+async def run_http(runtime, server, client_tokens):
     manager = StreamableHTTPSessionManager(
         server,
         json_response=True,
@@ -48,13 +56,20 @@ async def run_app_server(runtime, server):
             enable_dns_rebinding_protection=True, allowed_hosts=["127.0.0.1:*"], allowed_origins=[]
         ),
     )
-    endpoint = BearerEndpoint(manager, bearer)
+    endpoint = BearerEndpoint(manager, client_tokens)
     app = Starlette(routes=[Route("/mcp", endpoint, methods=["POST", "GET", "DELETE"])])
     sock = socket.socket()
-    sock.bind(("127.0.0.1", runtime.config.codex.port))
+    try:
+        # Allow immediate restarts after accepted HTTP sockets enter TIME_WAIT.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", runtime.config.http.port))
+    except OSError:
+        sock.close()
+        raise BridgeError(
+            "endpoint_unavailable", "Cannot bind the loopback MCP port; check http.port."
+        ) from None
     sock.listen(128)
     sock.setblocking(False)
-    port = sock.getsockname()[1]
     http = uvicorn.Server(
         uvicorn.Config(app, log_level="warning", access_log=False, lifespan="off")
     )
@@ -75,17 +90,14 @@ async def run_app_server(runtime, server):
                         "endpoint_unavailable", "Loopback MCP endpoint failed to start."
                     )
                 await asyncio.sleep(0.01)
-            await runtime.start(f"http://127.0.0.1:{port}/mcp", bearer)
-            logging.getLogger(__name__).info("app_server_ready")
-            waiters = [
-                asyncio.create_task(stop.wait()),
-                asyncio.create_task(runtime.transport.proc.wait()),
-            ]
+            await runtime.start()
+            logging.getLogger(__name__).info("bridges_ready")
+            waiters = [asyncio.create_task(stop.wait())]
             await asyncio.wait([*waiters, http_task], return_when=asyncio.FIRST_COMPLETED)
             if not stop.is_set():
                 raise BridgeError(
-                    "codex_disconnected",
-                    "App Server or MCP endpoint exited; restart Bridges to resume the binding.",
+                    "endpoint_unavailable",
+                    "MCP endpoint exited unexpectedly.",
                 )
     finally:
         for waiter in waiters:
@@ -103,15 +115,14 @@ async def run_app_server(runtime, server):
             loop.remove_signal_handler(sig)
 
 
-async def run(config, tokens):
+async def run(config, tokens, client_tokens):
     state = InstanceState(config.state_path, config.instance_id)
     state.acquire(tokens.values())
-    transport = AppServerTransport(config.codex)
     runtime = None
     try:
-        runtime = Runtime(config, state, transport, tokens)
+        runtime = Runtime(config, state, tokens)
         server = create_server(runtime)
-        await run_app_server(runtime, server)
+        await run_http(runtime, server, client_tokens)
     except BaseExceptionGroup as group:
         # The SDK's task group wraps startup errors. Keep expected operational
         # failures concise at the CLI boundary, including missing subscription login.
@@ -124,8 +135,6 @@ async def run(config, tokens):
     finally:
         if runtime:
             await runtime.close()
-        else:
-            await transport.close()
         state.close()
 
 
@@ -182,11 +191,11 @@ async def discover_telegram(config, bot=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Telegram bridge with one persistent Codex App Server session."
+        description="Shared HTTP MCP server with persistent per-connection session focus."
     )
     parser.add_argument(
         "command",
-        choices=["serve", "validate", "reset-binding", "discover-telegram"],
+        choices=["serve", "validate", "reset-focus", "discover-telegram"],
         nargs="?",
         default="serve",
     )
@@ -204,19 +213,20 @@ def main():
         config = load_config(args.config)
         if args.command == "discover-telegram":
             asyncio.run(discover_telegram(config, args.bot))
-        elif args.command == "reset-binding":
+        elif args.command == "reset-focus":
             state = InstanceState(config.state_path, config.instance_id)
             state.acquire()
             try:
-                state.reset()
+                state.save_focus({})
             finally:
                 state.close()
-            print("Binding reset. The next start creates a new App Server chat.")
+            print("Connection focus cleared. Application sessions are unchanged.")
         elif args.command == "validate":
             config.tokens()
+            config.client_tokens()
             print("Configuration and token environment variables are valid.")
         else:
-            asyncio.run(run(config, config.tokens()))
+            asyncio.run(run(config, config.tokens(), config.client_tokens()))
     except BridgeError as exc:
         print(f"{exc.code}: {exc}", file=sys.stderr)
         raise SystemExit(1) from None

@@ -12,6 +12,7 @@ from .errors import BridgeError
 from .registry import Registry
 from .state import identity
 from .telegram import TelegramBridge
+from .transports.app_server import AppServer
 from .typing import TypingManager
 
 log = logging.getLogger(__name__)
@@ -26,17 +27,22 @@ def result(data, images=(), error=False):
 
 
 class Runtime:
-    def __init__(self, config, state, transport, tokens, clients=None):
-        self.config, self.store, self.transport = config, state, transport
+    def __init__(self, config, state, tokens, clients=None, backends=None):
+        self.config, self.store = config, state
         self.registry = Registry(config)
         self.handles = Handles(config.attachment_limit, config.attachment_ttl_seconds)
         self.queue = asyncio.Queue(config.buffer_size)
         self.telegram = TelegramBridge(config, tokens, self.handles, self.enqueue, clients)
-        self.typing = TypingManager(transport, self.telegram.typing)
-        self.thread_id = state.read()
+        self.backends = (
+            backends
+            if backends is not None
+            else {name: AppServer(client) for name, client in config.clients.items()}
+        )
+        self.focuses = state.read_focus()
+        self.typing = {}
+        self.connection_locks = {key: asyncio.Lock() for key in config.telegram.connections}
         self.ready = False
         self.worker = None
-        self.start_lock = asyncio.Lock()
 
     def enqueue(self, envelope):
         try:
@@ -44,56 +50,92 @@ class Runtime:
         except asyncio.QueueFull:
             log.warning("inbound_dropped reason=buffer_full")
 
-    async def start(self, url, bearer):
-        """The application, never an MCP caller, creates or resumes the destination."""
-        async with self.start_lock:
-            if self.ready:
-                return
-            await self.transport.launch(url, bearer)
-            thread_id = await self.transport.bind(self.thread_id)
-            self.store.save(thread_id)
-            self.thread_id = thread_id
-            self.ready = True
-            self.worker = asyncio.create_task(self.deliver_loop())
-            await self.telegram.start()
+    async def start(self):
+        # No Codex process or conversation is started here. A client may be offline.
+        self.ready = True
+        self.worker = asyncio.create_task(self.deliver_loop())
+        await self.telegram.start()
 
     def protocol_docs(self, caller):
-        if not self.ready:
-            raise BridgeError(
-                "not_ready",
-                "The App Server session is still starting; no chat can claim this instance.",
-            )
-        if caller != self.thread_id:
-            raise BridgeError(
-                "binding_conflict", "Only the bridge-owned App Server chat may use this instance."
-            )
-        return self.registry.docs(self.thread_id)
+        return self.registry.docs(caller, self.focuses)
+
+    async def session(self, client_id, thread_id):
+        backend = self.backends.get(client_id)
+        if backend is None:
+            raise BridgeError("unauthorized", "Application client is not configured.")
+        return await backend.session(thread_id)
+
+    def typing_for(self, client_id, session):
+        key = (client_id, session.thread_id)
+        if key not in self.typing:
+            self.typing[key] = TypingManager(session, self.telegram.typing)
+        return self.typing[key]
+
+    async def focus(self, connection_id, client_id, caller):
+        await self.session(client_id, caller)
+        target = {"client_id": client_id, "thread_id": caller}
+        previous = self.focuses.get(connection_id)
+        if previous != target:
+            if previous:
+                manager = self.typing.get((previous["client_id"], previous["thread_id"]))
+                if manager:
+                    await manager.stop(connection_id)
+            updated = {**self.focuses, connection_id: target}
+            self.store.save_focus(updated)
+            self.focuses = updated
+        return {"connection_id": connection_id, **target}
 
     async def deliver_loop(self):
         while True:
             envelope = await self.queue.get()
             try:
-                delivery = await self.transport.deliver(envelope)
-                log.info("inbound_delivery outcome=%s code=%s", delivery.outcome, delivery.code)
-            except Exception:  # noqa: BLE001 - sanitize third-party errors at the public boundary
-                # No body, exception repr, upstream URL, or retry on uncertainty.
+                async with self.connection_locks[envelope.connection_id]:
+                    target = self.focuses.get(envelope.connection_id)
+                    if not target:
+                        log.info("inbound_dropped reason=unfocused")
+                        continue
+                    session = await self.session(target["client_id"], target["thread_id"])
+                    delivery = await session.deliver(envelope.text)
+                    log.info("inbound_delivery outcome=%s code=%s", delivery.outcome, delivery.code)
+            except BridgeError as exc:
+                log.warning("inbound_dropped code=%s", exc.code)
+            except Exception:  # noqa: BLE001 - sanitize upstream failures
                 log.warning("inbound_delivery outcome=unknown code=transport_failure")
             finally:
                 self.queue.task_done()
 
-    async def call(self, name, arguments, meta):
+    async def call(self, name, arguments, meta, client_id=None):
         try:
             caller, turn = identity(meta)
             if name not in self.registry.by_name:
                 raise BridgeError("unknown_tool", "This tool is not enabled.")
+            if client_id not in self.backends:
+                raise BridgeError("unauthorized", "Application client is not authenticated.")
+            if not self.ready:
+                raise BridgeError("not_ready", "Bridges is starting.")
             if name == "get_protocol_docs":
                 return result(self.protocol_docs(caller))
-            if not self.ready or caller != self.thread_id:
-                raise BridgeError(
-                    "binding_conflict",
-                    "Only the ready, bridge-owned App Server chat may use communication tools.",
-                )
             connection_id, connection = self.telegram.connection(arguments.get("connection_id"))
+            async with self.connection_locks[connection_id]:
+                if name == "focus":
+                    return result(await self.focus(connection_id, client_id, caller))
+                session = await self.session(client_id, caller)
+                if name == "telegram_set_typing":
+                    if self.focuses.get(connection_id) != {
+                        "client_id": client_id,
+                        "thread_id": caller,
+                    }:
+                        raise BridgeError(
+                            "not_focused",
+                            "Only the focused session may change typing for this connection.",
+                        )
+                    return result(
+                        await self.typing_for(client_id, session).set(
+                            connection_id, arguments["enabled"], turn
+                        )
+                    )
+            # Outbound tools have explicit destinations; focus controls inbound routing
+            # and typing, not the user's choice of where to send a message.
             if name == "telegram_send_text":
                 data = await self.telegram.send_text(connection, arguments["text"])
             elif name == "telegram_send_file":
@@ -104,8 +146,6 @@ class Runtime:
                 data = await self.telegram.send_images(
                     connection, arguments["paths"], arguments.get("caption", "")
                 )
-            elif name == "telegram_set_typing":
-                data = await self.typing.set(connection_id, arguments["enabled"], turn)
             elif name == "telegram_download_file":
                 data = await self.telegram.download(
                     connection_id, arguments["attachment_id"], {"file", "audio"}
@@ -161,9 +201,11 @@ class Runtime:
 
     async def close(self):
         self.ready = False
-        await self.typing.close()
         await self.telegram.close()
         if self.worker:
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)
-        await self.transport.close()
+        for manager in self.typing.values():
+            await manager.close()
+        for backend in self.backends.values():
+            await backend.close()

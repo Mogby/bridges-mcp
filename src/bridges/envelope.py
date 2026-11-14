@@ -9,6 +9,12 @@ import yaml
 from .errors import BridgeError
 
 
+@dataclass(frozen=True)
+class Inbound:
+    connection_id: str
+    text: str
+
+
 @dataclass
 class Attachment:
     connection_id: str
@@ -102,9 +108,10 @@ def normalize(update, bot, connections, handles, now=None):
         )
         header["attachments"] = [{"type": kind, "id": handle}]
     body = message.get("text", message.get("caption", ""))
-    return (
+    text = (
         "```yaml\n"
         + yaml.safe_dump({"bridge_context": header}, sort_keys=False, allow_unicode=True)
         + "```\n\n"
         + body
     )
+    return Inbound(connection_id, text)

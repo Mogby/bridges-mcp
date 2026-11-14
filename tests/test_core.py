@@ -6,7 +6,7 @@ import yaml
 from pydantic import ValidationError
 
 from bridges.config import Config, load_config
-from bridges.envelope import Attachment, Handles, normalize
+from bridges.envelope import Attachment, Handles, Inbound, normalize
 from bridges.errors import BridgeError
 from bridges.registry import Registry
 from bridges.state import InstanceState, identity
@@ -45,23 +45,22 @@ def test_empty_registry():
     assert "telegram" not in registry.docs("chat")
 
 
-def test_binding_persistence_and_lock(tmp_path):
+def test_focus_persistence_and_lock(tmp_path):
     first = InstanceState(tmp_path, "test")
-    first.acquire(["token"])
-    first.save("chat-one")
-    assert first.read() == "chat-one"
+    first.acquire(["123:secret"])
+    targets = {"one": {"client_id": "app", "thread_id": "chat-one"}}
+    first.save_focus(targets)
+    assert first.read_focus() == targets
     for name in ["test", "other"]:
         second = InstanceState(tmp_path, name)
         with pytest.raises(BridgeError, match="running"):
-            second.acquire(["token"])
-    with pytest.raises(BridgeError):
-        first.save("chat-two")
+            second.acquire(["123:secret"])
     first.close()
     restarted = InstanceState(tmp_path, "test")
-    restarted.acquire(["token"])
-    assert restarted.read() == "chat-one"
-    restarted.reset()
-    assert restarted.read() is None
+    restarted.acquire()
+    assert restarted.read_focus() == targets
+    restarted.save_focus({})
+    assert restarted.read_focus() == {}
     restarted.close()
 
 
@@ -107,6 +106,8 @@ def test_minimal_envelopes(config, payload, kind):
         handles,
         datetime(2026, 11, 14, 1, 2, 3, tzinfo=UTC),
     )
+    assert encoded.connection_id == "one"
+    encoded = encoded.text
     assert encoded.startswith("```yaml\n")
     header, body = encoded[len("```yaml\n") :].split("\n```\n\n", 1)
     meta = yaml.safe_load(header)["bridge_context"]
@@ -159,37 +160,40 @@ def test_handles_expire_bound_and_evicted():
         handles.get(second, "one", {"audio"})
 
 
-async def test_startup_and_every_tool_enforces_identity(runtime):
+async def test_startup_and_authenticated_caller(runtime):
     assert not runtime.telegram.tasks
-    unready = await runtime.call("get_protocol_docs", {}, {"threadId": "other"})
+    unready = await runtime.call("get_protocol_docs", {}, {"threadId": "chat"}, "app")
     assert unready.isError and unready.structuredContent["code"] == "not_ready"
-    assert runtime.thread_id is None and runtime.store.read() is None
-    assert not runtime.telegram.tasks
-    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
-    docs = await runtime.call("get_protocol_docs", {}, {"threadId": "chat"})
-    assert not docs.isError
-    assert len(runtime.telegram.tasks) == 1  # two connections, one bot/poller
+    await runtime.start()
+    assert len(runtime.telegram.tasks) == 1
     for name in runtime.registry.by_name:
-        denied = await runtime.call(name, {"connection_id": "one"}, {"threadId": "other"})
-        assert denied.isError and denied.structuredContent["code"] == "binding_conflict"
-    ambiguous = await runtime.call("telegram_send_text", {"text": "hello"}, {"threadId": "chat"})
+        denied = await runtime.call(name, {"connection_id": "one"}, {"threadId": "chat"})
+        assert denied.isError and denied.structuredContent["code"] == "unauthorized"
+    ambiguous = await runtime.call(
+        "telegram_send_text", {"text": "hello"}, {"threadId": "chat"}, "app"
+    )
     assert ambiguous.structuredContent["code"] == "ambiguous_connection"
     sent = await runtime.call(
-        "telegram_send_text", {"text": "hello", "connection_id": "two"}, {"threadId": "chat"}
+        "telegram_send_text", {"text": "hello", "connection_id": "two"}, {"threadId": "chat"}, "app"
     )
     assert sent.structuredContent["message_id"] == 7
-    call = runtime.telegram.clients["main"].call.call_args
-    assert call.args[1] == {"chat_id": "2", "message_thread_id": 42, "text": "hello"}
+    assert runtime.telegram.clients["main"].call.call_args.args[1] == {
+        "chat_id": "2",
+        "message_thread_id": 42,
+        "text": "hello",
+    }
 
 
 async def test_bounded_burst_submits_without_waiting_for_turn(runtime):
-    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
+    await runtime.start()
+    await runtime.call("focus", {"connection_id": "one"}, {"threadId": "chat"}, "app")
     for i in range(runtime.config.buffer_size + 5):
-        runtime.enqueue(str(i))
+        runtime.enqueue(Inbound("one", str(i)))
     assert runtime.queue.qsize() == runtime.config.buffer_size
     await runtime.queue.join()
-    assert len(runtime.transport.delivered) == runtime.config.buffer_size
-    assert runtime.transport.state.status == "active"
+    session = runtime.backends["app"].sessions["chat"]
+    assert len(session.delivered) == runtime.config.buffer_size
+    assert session.state.status == "active"
 
 
 def test_empty_list_disables_telegram():
@@ -205,6 +209,8 @@ def test_header_fenced_body_untouched(config):
         config.telegram.connections,
         Handles(),
     )
+    assert encoded.connection_id == "one"
+    encoded = encoded.text
     assert encoded.startswith("```yaml\nbridge_context:\n")
     header, original = encoded[len("```yaml\n") :].split("\n```\n\n", 1)
     assert "\n---\n" not in header

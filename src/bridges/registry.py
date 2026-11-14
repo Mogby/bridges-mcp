@@ -89,18 +89,27 @@ class Registry:
         self.specs = [
             ToolSpec(
                 "get_protocol_docs",
-                "Read enabled bridge protocols, tools, and the application-owned chat binding.",
+                "Read enabled bridge protocols, tools, and current connection focus.",
                 {},
             )
         ]
         if config.telegram.connections:
+            self.specs.append(
+                ToolSpec(
+                    "focus",
+                    "Route incoming messages for one connection to the calling session. Replaces that connection's previous focus; other connections are unchanged.",
+                    {"connection_id": {"type": "string", "minLength": 1}},
+                    ("connection_id",),
+                )
+            )
             self.specs += TELEGRAM_TOOLS
         self.by_name = {spec.name: spec for spec in self.specs}
 
-    def docs(self, thread_id):
+    def docs(self, thread_id, focuses=None):
         docs = {
             "instructions": INSTRUCTIONS,
-            "binding": {"status": "bound", "thread_id": thread_id},
+            "session": {"thread_id": thread_id},
+            "focus": focuses or {},
             "envelope": {
                 "format": "YAML bridge_context header inside a triple-backtick yaml code fence, then a blank line and original body text. No --- separator.",
                 "required": ["bridge", "connection_id", "received_at"],
@@ -119,7 +128,7 @@ class Registry:
                 "routing": "Everyone in configured conversations may instruct the agent. Choose destinations from user instructions. No automatic forwarding or last-active routing. connection_id may be omitted only with one connection.",
                 "input": "Only text, photos, voice/audio and documents. No edits, reactions or service events. Documents remain file handles even if their MIME type is an image.",
                 "attachments": f"Handles expire after {self.config.attachment_ttl_seconds} seconds, eviction, or restart. Download paths are local to the bridge host. Audio is not transcribed.",
-                "typing": "Enable once to refresh about every four seconds for the verified calling turn. Disable, completion, failure, interruption, loss of lifecycle, or shutdown stops refreshes. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
+                "typing": "Only the focused session may change typing for a connection. Enable once to refresh about every four seconds for the verified calling turn. Disable, completion, failure, interruption, loss of lifecycle, or shutdown stops refreshes. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
                 "errors": "Tool failures use isError and a machine-readable code. Never blindly retry delivery_unknown or a partially sent batch. Inspect completed_message_ids and failed_index.",
             }
         return docs

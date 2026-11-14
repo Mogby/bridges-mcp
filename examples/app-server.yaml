@@ -1,8 +1,10 @@
-instance_id: personal
-codex:
-  executable: codex
-  cwd: /srv/workspace
-  port: 0 # Choose an unused loopback port automatically.
+instance_id: main
+http:
+  port: 8765
+clients:
+  assistant:
+    token_env: ASSISTANT_MCP_TOKEN
+    socket_path: /run/assistant/codex.sock
 telegram:
   bots:
     main:
@@ -11,3 +13,5 @@ telegram:
     personal:
       bot: main
       chat_id: "123456789"
+state_dir: /var/lib/bridges-mcp
+download_dir: /srv/assistant/downloads

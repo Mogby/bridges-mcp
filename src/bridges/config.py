@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Literal
 
 import yaml
 from pydantic import (
@@ -66,16 +65,19 @@ class Telegram(Model):
         return self
 
 
-class Codex(Model):
-    mode: Literal["app_server"] = "app_server"
-    executable: str = "codex"
-    cwd: str | None = None
-    port: int = Field(default=0, ge=0, le=65535)
+class Client(Model):
+    token_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    socket_path: str = Field(pattern=r"^/")
+
+
+class HTTP(Model):
+    port: int = Field(default=8765, ge=1, le=65535)
 
 
 class Config(Model):
     instance_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
-    codex: Codex = Field(default_factory=Codex)
+    http: HTTP = Field(default_factory=HTTP)
+    clients: dict[str, Client] = Field(default_factory=dict)
     telegram: Telegram = Field(default_factory=Telegram)
     state_dir: str = "~/.local/state/bridges"
     download_dir: str | None = None
@@ -94,6 +96,22 @@ class Config(Model):
             if self.download_dir
             else self.state_path / self.instance_id / "downloads"
         )
+
+    def client_tokens(self):
+        result = {}
+        for name, client in self.clients.items():
+            value = os.environ.get(client.token_env, "")
+            if not name.strip() or len(value) < 32 or value in result.values():
+                raise BridgeError(
+                    "invalid_config",
+                    "Each client needs a unique bearer token of at least 32 characters.",
+                )
+            result[name] = value
+        if not result:
+            raise BridgeError(
+                "invalid_config", "Configure at least one authenticated application client."
+            )
+        return result
 
     def tokens(self):
         result = {}

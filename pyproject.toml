@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridges-mcp"
-version = "0.1.0"
-description = "Telegram communication and incoming-message delivery for one Codex chat"
+version = "0.2.0"
+description = "Shared Telegram MCP server with persistent per-connection session focus"
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.30,<2", "httpx>=0.28,<1", "PyYAML>=6,<7", "Pillow>=11,<13",
-  "pydantic>=2.11,<3", "jsonschema>=4.20,<5", "uvicorn>=0.31,<1", "starlette>=0.46,<2",
+  "pydantic>=2.11,<3", "jsonschema>=4.20,<5", "uvicorn>=0.31,<1", "starlette>=0.46,<2", "websockets>=15,<17",
 ]
 
 [project.optional-dependencies]

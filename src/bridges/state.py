@@ -11,7 +11,7 @@ class InstanceState:
     def __init__(self, root: Path, instance_id: str):
         self.root, self.instance_id = root, instance_id
         self.directory = root / instance_id
-        self.binding_path = self.directory / "binding.json"
+        self.focus_path = self.directory / "focus.json"
         self.locks = []
 
     def acquire(self, tokens=()):
@@ -34,42 +34,43 @@ class InstanceState:
             self.close()
             raise
 
-    def read(self):
-        if not self.binding_path.exists():
-            return None
+    def read_focus(self):
+        """Only routing is persisted; applications own their conversation state."""
+        if not self.focus_path.exists():
+            return {}
         try:
-            data = json.loads(self.binding_path.read_text())
+            data = json.loads(self.focus_path.read_text())
             if (
                 data["instance_id"] != self.instance_id
-                or data["mode"] != "app_server"
-                or not isinstance(data["thread_id"], str)
-                or not data["thread_id"]
+                or not isinstance(data["connections"], dict)
+                or any(
+                    not isinstance(key, str)
+                    or not key
+                    or not isinstance(value, dict)
+                    or set(value) != {"client_id", "thread_id"}
+                    or any(not isinstance(v, str) or not v for v in value.values())
+                    for key, value in data["connections"].items()
+                )
             ):
                 raise ValueError()
-            return data["thread_id"]
-        except (ValueError, KeyError):
-            raise BridgeError(
-                "binding_conflict",
-                "Saved binding is invalid or is not an App Server binding; stop Bridges and use reset-binding.",
-            ) from None
+            return data["connections"]
+        except (ValueError, KeyError, TypeError):
+            raise BridgeError("invalid_focus", "Saved connection focus is invalid.") from None
 
-    def save(self, thread_id):
-        previous = self.read()
-        if previous and previous != thread_id:
-            raise BridgeError("binding_conflict", "This instance is already bound to another chat.")
-        temporary = self.binding_path.with_suffix(".tmp")
+    def save_focus(self, connections):
+        """Replace the complete map atomically under the instance's process lock."""
+        temporary = self.focus_path.with_suffix(".tmp")
         fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w") as stream:
-            json.dump(
-                {"instance_id": self.instance_id, "mode": "app_server", "thread_id": thread_id},
-                stream,
-            )
+            json.dump({"instance_id": self.instance_id, "connections": connections}, stream)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(self.binding_path)
-
-    def reset(self):
-        self.binding_path.unlink(missing_ok=True)
+        temporary.replace(self.focus_path)
+        directory_fd = os.open(self.directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     def close(self):
         for fd in self.locks:

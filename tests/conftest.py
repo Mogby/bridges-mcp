@@ -4,23 +4,18 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bridges.config import Config
+from bridges.errors import BridgeError
 from bridges.runtime import Runtime
 from bridges.state import InstanceState
 from bridges.transports.base import Delivery, Transport, TurnState
 
 
 class FakeTransport(Transport):
-    def __init__(self):
+    def __init__(self, thread_id="chat"):
         super().__init__()
+        self.thread_id = thread_id
         self.delivered = []
         self.update(TurnState("active", "turn-1"))
-
-    async def launch(self, url, bearer):
-        self.endpoint = url
-
-    async def bind(self, thread_id=None):
-        self.thread_id = thread_id or "chat"
-        return self.thread_id
 
     async def snapshot(self):
         return self.state
@@ -29,8 +24,19 @@ class FakeTransport(Transport):
         self.delivered.append(text)
         return Delivery("accepted", "steered")
 
+
+class FakeBackend:
+    def __init__(self):
+        self.sessions = {name: FakeTransport(name) for name in ["chat", "other"]}
+
+    async def session(self, thread_id):
+        if thread_id not in self.sessions:
+            raise BridgeError("session_unavailable", "Unknown session")
+        return self.sessions[thread_id]
+
     async def close(self):
-        self.update(TurnState("disconnected"))
+        for session in self.sessions.values():
+            session.update(TurnState("disconnected"))
 
 
 @pytest.fixture
@@ -39,6 +45,7 @@ def config(tmp_path):
         {
             "instance_id": "test",
             "state_dir": str(tmp_path),
+            "clients": {"app": {"token_env": "APP_TOKEN", "socket_path": "/tmp/app.sock"}},
             "telegram": {
                 "bots": {"main": {"token_env": "TEST_TOKEN"}},
                 "connections": {
@@ -64,9 +71,19 @@ async def runtime(config):
         return {"message_id": 7}
 
     api.call.side_effect = call
-    runtime = Runtime(config, state, FakeTransport(), {}, {"main": api})
+    runtime = Runtime(config, state, {}, {"main": api}, {"app": FakeBackend()})
     try:
         yield runtime
     finally:
         await runtime.close()
         state.close()
+
+
+@pytest.fixture
+def socket_path():
+    import tempfile
+    from pathlib import Path
+
+    # macOS Unix sockets cannot use pytest's long default temp paths.
+    with tempfile.TemporaryDirectory(prefix="bm-", dir="/tmp") as directory:
+        yield str(Path(directory) / "app.sock")

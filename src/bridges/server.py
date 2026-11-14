@@ -6,7 +6,7 @@ from .runtime import result
 
 
 def create_server(runtime):
-    server = Server("bridges", version="0.1.0", instructions=INSTRUCTIONS)
+    server = Server("bridges", version="0.2.0", instructions=INSTRUCTIONS)
 
     @server.list_tools()
     async def list_tools():
@@ -28,6 +28,8 @@ def create_server(runtime):
                 )
         meta = server.request_context.meta
         metadata = meta.model_dump(by_alias=True) if meta else {}
-        return await runtime.call(name, arguments, metadata)
+        request = server.request_context.request
+        client_id = request.scope.get("bridges_client") if request is not None else None
+        return await runtime.call(name, arguments, metadata, client_id)
 
     return server

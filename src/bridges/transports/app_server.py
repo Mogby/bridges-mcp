@@ -1,90 +1,108 @@
-"""Bridge-owned App Server using the installed v2 JSON-RPC protocol."""
+"""Observe and deliver to application-owned sessions; never launch or resume them."""
 
 import asyncio
-import json
 import logging
-import os
+
+from websockets.asyncio.client import unix_connect
+from websockets.exceptions import WebSocketException
 
 from ..errors import BridgeError
 from .base import Delivery, Transport, TurnState
-from .rpc import RPC, RPCRejected
+from .rpc import MAX_FRAME, RPC, RPCRejected
 
 log = logging.getLogger(__name__)
 
 
-class AppServerTransport(Transport):
+class AppServer:
     def __init__(self, config):
-        super().__init__()
         self.config = config
-        self.proc = None
         self.rpc = None
+        self.sessions = {}
+        self.connect_lock = asyncio.Lock()
+        self.session_lock = asyncio.Lock()
+        self.monitor = None
+
+    async def connect(self):
+        async with self.connect_lock:
+            if self.rpc and not self.rpc.closed:
+                return
+            if self.rpc:
+                await self.rpc.close()
+                self.rpc = None
+            socket = await unix_connect(
+                self.config.socket_path,
+                uri="ws://localhost",
+                max_size=MAX_FRAME,
+                open_timeout=3,
+                close_timeout=2,
+            )
+            rpc = RPC(socket, on_event=self.event, on_disconnect=self.disconnected)
+            try:
+                await rpc.request(
+                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.2.0"}}
+                )
+                await rpc.send({"method": "initialized"})
+            except BaseException:
+                await rpc.close()
+                raise
+            self.rpc = rpc
+            if self.monitor is None:
+                self.monitor = asyncio.create_task(self.observe())
+
+    async def session(self, thread_id):
+        async with self.session_lock:
+            session = self.sessions.get(thread_id)
+            if session is None:
+                session = AppServerSession(self, thread_id)
+            state = await session.snapshot()
+            if state.status not in {"idle", "active"}:
+                raise BridgeError(
+                    "session_unavailable",
+                    "The application must load the calling session in its App Server.",
+                )
+            self.sessions[thread_id] = session
+            return session
+
+    def disconnected(self):
+        for session in self.sessions.values():
+            session.disconnected()
+
+    def event(self, message):
+        session = self.sessions.get(message.get("params", {}).get("threadId"))
+        if session:
+            session.event(message)
+
+    async def observe(self):
+        # thread/read does not subscribe. Poll lifecycle without thread/resume:
+        # only the owning application is allowed to load or resume conversations.
+        while True:
+            await asyncio.sleep(1)
+            await asyncio.gather(*(session.snapshot() for session in list(self.sessions.values())))
+
+    async def close(self):
+        if self.monitor:
+            self.monitor.cancel()
+            await asyncio.gather(self.monitor, return_exceptions=True)
+        if self.rpc:
+            await self.rpc.close()
+        self.disconnected()
+
+
+class AppServerSession(Transport):
+    def __init__(self, backend, thread_id):
+        super().__init__()
+        self.backend, self.thread_id = backend, thread_id
         self.event_revision = 0
         self.pending_requests = {}
         self.snapshot_lock = asyncio.Lock()
 
+    @property
+    def rpc(self):
+        return self.backend.rpc
+
     def disconnected(self):
         self.event_revision += 1
         self.update(TurnState("disconnected"))
-
-    async def launch(self, url, bearer):
-        env = dict(os.environ)
-        for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
-            env.pop(key, None)
-        env["BRIDGES_MCP_BEARER"] = bearer
-        # A single loopback endpoint; never spawn another listener process.
-        override = (
-            "mcp_servers.bridges="
-            + "{url="
-            + json.dumps(url)
-            + ',bearer_token_env_var="BRIDGES_MCP_BEARER"}'
-        )
-        self.proc = await asyncio.create_subprocess_exec(
-            self.config.executable,
-            "-c",
-            override,
-            "app-server",
-            "--stdio",
-            env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            limit=16 * 1024 * 1024,
-        )
-        self.rpc = RPC(
-            self.proc.stdout, self.proc.stdin, on_event=self.event, on_disconnect=self.disconnected
-        )
-        await self.rpc.request(
-            "initialize", {"clientInfo": {"name": "bridges", "version": "0.1.0"}}
-        )
-        await self.rpc.send({"method": "initialized"})
-        account = await self.rpc.request("account/read", {"refreshToken": False})
-        if (account.get("account") or {}).get("type") != "chatgpt":
-            raise BridgeError(
-                "subscription_login_required",
-                "Run codex login on this host with your ChatGPT subscription before starting Bridges.",
-            )
-
-    async def bind(self, thread_id=None):
-        if self.thread_id and self.thread_id != thread_id:
-            raise BridgeError("binding_conflict", "App Server is already bound to another chat.")
-        if thread_id:
-            result = await self.rpc.request(
-                "thread/resume", {"threadId": thread_id, "excludeTurns": True}
-            )
-        else:
-            params = {
-                "developerInstructions": "At the start of this chat call bridges.get_protocol_docs and discover Bridges tools. External replies require Bridges tools; ordinary assistant prose is not forwarded."
-            }
-            if self.config.cwd:
-                params["cwd"] = self.config.cwd
-            result = await self.rpc.request("thread/start", params)
-        self.thread_id = result["thread"]["id"]
-        state = await self.snapshot()
-        if state.status not in {"active", "idle"}:
-            raise BridgeError(
-                "codex_unavailable", "Cannot observe the App Server chat; polling has not started."
-            )
-        return self.thread_id
 
     def event(self, message):
         method, params = message.get("method", ""), message.get("params", {})
@@ -118,18 +136,13 @@ class AppServerTransport(Transport):
         async with self.snapshot_lock:
             revision = self.event_revision
             try:
+                await self.backend.connect()
                 result = await self.rpc.request(
                     "thread/read", {"threadId": self.thread_id, "includeTurns": False}
                 )
+                if result["thread"]["id"] != self.thread_id:
+                    raise KeyError("thread identity mismatch")
                 status = result["thread"]["status"]["type"]
-                if status == "notLoaded":
-                    await self.rpc.request(
-                        "thread/resume", {"threadId": self.thread_id, "excludeTurns": True}
-                    )
-                    result = await self.rpc.request(
-                        "thread/read", {"threadId": self.thread_id, "includeTurns": False}
-                    )
-                    status = result["thread"]["status"]["type"]
                 state = TurnState("idle") if status == "idle" else TurnState()
                 if status == "active":
                     turns = await self.rpc.request(
@@ -147,7 +160,7 @@ class AppServerTransport(Transport):
                     state = TurnState("active", active[0] if len(active) == 1 else None)
                 if revision == self.event_revision:
                     self.update(state)
-            except (OSError, TimeoutError, BridgeError, KeyError, TypeError):
+            except (OSError, TimeoutError, BridgeError, KeyError, TypeError, WebSocketException):
                 self.disconnected()
             return self.state
 
@@ -193,15 +206,3 @@ class AppServerTransport(Transport):
                     self.disconnected()
                     return Delivery("unknown", "delivery_unknown")
             return Delivery("rejected", "codex_rejected")
-
-    async def close(self):
-        if self.rpc:
-            await self.rpc.close()
-        if self.proc and self.proc.returncode is None:
-            self.proc.terminate()
-            try:
-                await asyncio.wait_for(self.proc.wait(), 5)
-            except TimeoutError:
-                self.proc.kill()
-                await self.proc.wait()
-        self.disconnected()
