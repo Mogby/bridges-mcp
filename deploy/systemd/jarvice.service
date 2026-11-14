@@ -1,5 +1,5 @@
 [Unit]
-Description=Jarvis Telegram bridge with Codex App Server
+Description=Jarvis bot with Codex App Server and Bridges MCP
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=120

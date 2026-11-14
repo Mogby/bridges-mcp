@@ -47,11 +47,11 @@ Create `/root/jarvis_workdir/AGENTS.md` from `workspace-AGENTS.md` if no instruc
 file exists. Preserve this file during deployments; it belongs to the user.
 
 ```sh
-install -m 644 deploy/systemd/bridges-jarvis.service /etc/systemd/system/
+install -m 644 deploy/systemd/jarvice.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now bridges-jarvis.service
-systemctl status bridges-jarvis.service
-journalctl -u bridges-jarvis.service -n 30 --no-pager
+systemctl enable --now jarvice.service
+systemctl status jarvice.service
+journalctl -u jarvice.service -n 30 --no-pager
 ```
 
 ## Workspace and operations
@@ -61,8 +61,8 @@ after editing to reload workspace context. Restarting retains the saved Codex
 chat; it does not intentionally create another session.
 
 ```sh
-systemctl restart bridges-jarvis.service
-systemctl stop bridges-jarvis.service
+systemctl restart jarvice.service
+systemctl stop jarvice.service
 ```
 
 The bridge preserves the existing binding across code updates. Stop the service,
