@@ -158,6 +158,29 @@ async def test_app_server_unknown_response_no_retry(config):
     transport.rpc.request.assert_awaited_once()
 
 
+@pytest.mark.parametrize("latest_status", ["inProgress", "completed"])
+async def test_snapshot_ignores_stale_in_progress_history(latest_status):
+    backend = AsyncMock()
+    transport = AppServerSession(backend, "chat")
+    history = [
+        {"id": "current", "status": latest_status},
+        {"id": "before-restart", "status": "inProgress"},
+    ]
+
+    async def request(method, params):
+        if method == "thread/read":
+            return {"thread": {"id": "chat", "status": {"type": "active"}}}
+        assert method == "thread/turns/list"
+        assert params["sortDirection"] == "desc"
+        return {"data": history[: params["limit"]]}
+
+    backend.rpc.request.side_effect = request
+    turn = "current" if latest_status == "inProgress" else None
+    assert await transport.snapshot() == TurnState("active", turn)
+    assert await transport.verify_turn("current") == turn
+    assert await transport.verify_turn("before-restart") is None
+
+
 async def test_approval_and_input_requests_preserve_active_state(config):
     transport = AppServerSession(AsyncMock(), "chat")
     transport.update(TurnState("active", "turn"))

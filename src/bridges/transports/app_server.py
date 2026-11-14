@@ -149,11 +149,13 @@ class AppServerSession(Transport):
                         "thread/turns/list",
                         {
                             "threadId": self.thread_id,
-                            "limit": 10,
+                            "limit": 1,
                             "sortDirection": "desc",
                             "itemsView": "notLoaded",
                         },
                     )
+                    # Historical turns can retain inProgress after an application
+                    # restart. Only the newest turn can own the current activity.
                     active = [
                         turn["id"] for turn in turns["data"] if turn["status"] == "inProgress"
                     ]

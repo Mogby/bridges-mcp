@@ -42,6 +42,14 @@ session ID, left the other service's process unchanged, and restored authenticat
 MCP access. This exposed and fixed a TCP TIME_WAIT restart issue; the process test
 now stops the server with a keep-alive client still connected before rebinding.
 
+A user-originated Telegram message reached the resumed session, which replied
+successfully. Follow-up checks exposed stale historical `inProgress` entries in
+Codex's turn listing after restart. Bridges now checks only the newest turn;
+regression tests verify stale history cannot block current typing or substitute
+for a completed newest turn. Live verification then confirmed typing enable/disable,
+accepted active-turn steering, and completion observation. The final automated
+suite passed all 65 tests, including the installed Codex lifecycle check.
+
 The application also successfully spawned a subagent, which ran `pwd` in its
 configured workspace and completed. No experimental feature toggle was needed.
 After restart, the application reported `gpt-6.1-sol`, high reasoning effort,
