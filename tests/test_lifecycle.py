@@ -7,7 +7,6 @@ from conftest import FakeTransport
 from bridges.errors import BridgeError
 from bridges.transports.app_server import AppServerTransport
 from bridges.transports.base import TurnState
-from bridges.transports.desktop import DesktopTransport, apply_patches, desktop_state
 from bridges.transports.rpc import RPCRejected
 from bridges.typing import TypingManager
 
@@ -93,7 +92,7 @@ async def test_typing_cancellation_waits_for_inflight_refresh():
 
 
 async def test_outbound_send_does_not_stop_typing(runtime):
-    await runtime.bootstrap("chat")
+    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
     enabled = await runtime.call(
         "telegram_set_typing",
         {"connection_id": "one", "enabled": True},
@@ -130,91 +129,6 @@ async def test_stale_completion_cannot_stop_new_turn_typing(config):
     )
     assert not manager.owners
     await manager.close()
-
-
-def test_desktop_snapshot_and_patches(config):
-    transport = DesktopTransport(config.codex)
-    transport.thread_id, transport.owner = "chat", "owner"
-
-    def emit(change, source="owner", version=13):
-        transport.event(
-            {
-                "method": "thread-stream-state-changed",
-                "version": version,
-                "sourceClientId": source,
-                "params": {"hostId": "local", "conversationId": "chat", "change": change},
-            }
-        )
-
-    document = {
-        "resumeState": "resumed",
-        "threadRuntimeStatus": {"type": "active"},
-        "turnHistory": {
-            "kind": "canonical",
-            "history": {"entitiesByKey": {"turn:1": {"turnId": "t1", "status": "inProgress"}}},
-        },
-        "turns": [],
-    }
-    emit({"type": "snapshot", "revision": 10, "conversationState": document})
-    assert transport.state == TurnState("active", "t1")
-    emit(
-        {
-            "type": "patches",
-            "baseRevision": 10,
-            "revision": 11,
-            "patches": [
-                {
-                    "op": "replace",
-                    "path": ["turnHistory", "history", "entitiesByKey", "turn:1", "status"],
-                    "value": "completed",
-                },
-                {"op": "replace", "path": ["threadRuntimeStatus", "type"], "value": "idle"},
-            ],
-        }
-    )
-    assert transport.state == TurnState("idle")
-    emit({"type": "snapshot", "revision": 12, "conversationState": document}, source="other")
-    assert transport.revision == 11
-    emit({"type": "patches", "baseRevision": 9, "revision": 12, "patches": []})
-    assert transport.state.status == "disconnected"
-
-
-def test_desktop_pending_submission_is_not_idle():
-    assert (
-        desktop_state(
-            {
-                "threadRuntimeStatus": {"type": "idle"},
-                "unconfirmedTurnSubmissions": [{"terminal": False}],
-            }
-        ).status
-        == "active"
-    )
-    assert apply_patches(
-        {"a": [1, 3]},
-        [{"op": "add", "path": ["a", 1], "value": 2}, {"op": "remove", "path": ["a", 0]}],
-    ) == {"a": [2, 3]}
-
-
-async def test_desktop_unknown_steer_never_queues(config):
-    transport = DesktopTransport(config.codex)
-    transport.thread_id, transport.owner = "chat", "owner"
-    transport.snapshot = AsyncMock(return_value=TurnState("active", "turn"))
-    transport.rpc = AsyncMock()
-    transport.rpc.request.side_effect = TimeoutError()
-    transport.queue = AsyncMock()
-    delivered = await transport.deliver("test")
-    assert delivered.outcome == "unknown"
-    transport.rpc.request.assert_awaited_once()
-    transport.queue.assert_not_awaited()
-
-
-async def test_desktop_idle_race_is_only_queue_path(config):
-    transport = DesktopTransport(config.codex)
-    transport.snapshot = AsyncMock(return_value=TurnState("idle"))
-    transport.queue = AsyncMock(return_value="queued")
-    transport.rpc = AsyncMock()
-    assert await transport.deliver("test") == "queued"
-    transport.rpc.request.assert_not_awaited()
 
 
 async def test_app_server_active_idle_and_known_race(config):

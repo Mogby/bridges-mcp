@@ -15,6 +15,7 @@ from bridges.transports.rpc import RPC
 
 
 async def test_loopback_endpoint_auth_and_mcp_callbacks(runtime):
+    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
     manager = StreamableHTTPSessionManager(
         create_server(runtime), json_response=True, stateless=True
     )

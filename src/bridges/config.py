@@ -67,9 +67,8 @@ class Telegram(Model):
 
 
 class Codex(Model):
-    mode: Literal["desktop", "app_server"] = "desktop"
+    mode: Literal["app_server"] = "app_server"
     executable: str = "codex"
-    ipc_path: str = "~/.codex/ipc/ipc.sock"
     cwd: str | None = None
     port: int = Field(default=0, ge=0, le=65535)
 

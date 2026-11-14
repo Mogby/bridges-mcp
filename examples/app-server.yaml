@@ -1,6 +1,5 @@
-instance_id: vps
+instance_id: personal
 codex:
-  mode: app_server
   executable: codex
   cwd: /srv/workspace
   port: 0 # Choose an unused loopback port automatically.

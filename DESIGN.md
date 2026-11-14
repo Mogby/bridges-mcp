@@ -17,8 +17,8 @@ evidence and remaining acceptance checks are recorded in [docs/validation.md](do
   tools. The user should not operate a separate incoming-message service.
 - Support multiple bridge types and multiple connections of each type. Implement
   Telegram first; leave Discord and cron integrations for later.
-- All configured connections feed one dedicated Codex chat. Support the desktop
-  app and a persistent Codex session on a VPS through internal transport modules.
+- All configured connections feed one persistent Codex App Server chat owned by
+  the bridge application. Run the application locally or on a VPS.
 - Steer active turns; start work when idle. Do not routinely queue messages until
   the active turn finishes.
 - Emit only incoming text, audio, image, and file messages. No reaction, edit,
@@ -60,22 +60,11 @@ single-instance lock for each configured bridge instance; a second process must
 report the conflict rather than duplicate listeners. No general plugin loader or
 message broker is needed initially.
 
-Implementation: asynchronous Python and the official MCP SDK. Desktop IPC framing
-and host metadata handling live in the production transport and binding modules.
-Tests exercise those modules directly; no separate test bridge is required.
+Implementation: asynchronous Python and the official MCP SDK. The Codex transport
+uses the App Server JSON-RPC protocol and lifecycle notifications. Tests exercise
+these modules directly; no separate test bridge is required.
 
-### Desktop deployment
-
-The desktop app launches Bridges MCP over stdio. That process owns Telegram
-listeners and connects to the existing desktop session. It lives while its MCP
-connection lives; it is not an always-running daemon when the app is closed.
-One selected chat binds the instance during protocol initialization.
-
-If the desktop launches another MCP process for another chat, that process must
-not steal the binding or poll the same bot. Return a clear instance/binding error.
-An automatic shared daemon for many desktop MCP clients is out of scope for v1.
-
-### VPS deployment
+### Deployment
 
 Provide a single application entry point that owns a persistent Codex App Server
 child process and the bridge runtime. Expose the same MCP tools to that Codex
@@ -83,13 +72,13 @@ process through a loopback-only MCP endpoint. Configure its bridge entry to use
 that endpoint, not spawn a second copy of the listener application. Start the
 endpoint before initializing the Codex chat.
 
-Authenticate Codex using the user's existing subscription login on the VPS.
-Do not copy credentials from the desktop or introduce an API-key fallback.
+Authenticate Codex using the user's existing subscription login on the bridge
+host. Do not copy credentials between hosts or introduce an API-key fallback.
 Persist the chat binding so the application can resume the same chat after a
 restart; this small configuration state is separate from a durable inbox.
 The user can run the one application under their normal process supervisor.
 
-This VPS lifecycle is a proposed implementation design. Subscription login,
+The application owns this lifecycle. Full subscription-backed model execution,
 resumption, active steering, and MCP attachment still require an integrated test.
 
 ## Configuration
@@ -99,9 +88,9 @@ Proposed configuration shape:
 ```yaml
 instance_id: personal
 codex:
-  mode: desktop                  # desktop | app_server
-  # Desktop: bind using host metadata on the first get_protocol_docs call.
-  # VPS: create/resume one chat and persist its binding outside this file.
+  executable: codex
+  cwd: /srv/workspace
+  # Always creates/resumes one App Server chat and persists its binding.
 telegram:
   bots:
     main:
@@ -149,21 +138,21 @@ The docs and tool registry are generated from the same enabled-bridge registry.
 The host performs MCP `tools/list`; do not assume the agent has a literal
 `tools/list` function. See the [MCP tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
 
-On desktop, the first successful docs call captures the host-provided
-`_meta.threadId`. Do not take a destination from message text, process cwd, the
-most recent chat, or a guessed environment variable. Persist the binding with
-the instance identity. Later calls from another chat must not silently rebind.
-An explicit local setup/reset operation may replace the binding.
+The application creates or resumes its destination using App Server responses,
+then persists that thread ID with the instance identity. Only after observing a
+reachable active or idle chat may it start Telegram polling. A saved binding from
+an unsupported transport is rejected rather than silently reused.
 
-Validate host-provided chat identity on all communication tool calls, not just
-bootstrap. A tool call from a different chat must not send through the bound
-instance or alter its typing tasks.
+`get_protocol_docs()` reports this existing binding; it never chooses a destination,
+starts polling, or rebinds the instance. Calls during startup return `not_ready`.
+Validate host-provided chat identity on every tool call, including docs, against
+the application-owned chat. Metadata is attribution, not a destination selector.
+A call from a different chat must not send messages or alter typing tasks.
 
-The MCP startup handshake alone does not supply chat identity. Require
-one initial user interaction in the selected chat to run bootstrap before
-starting external polling. On restart, an existing binding may be reused only
-after validating that its target is reachable. On VPS, the application already
-knows the chat it created/resumed and checks MCP calls against that binding.
+Stopping the application closes its listeners, MCP endpoint, and App Server child.
+Restart resumes the saved chat. The explicit local `reset-binding` command requires
+the application to be stopped and clears only the saved binding; the next start
+creates a new App Server chat. It does not delete the old chat or its history.
 
 ## Inbound format
 
@@ -207,7 +196,7 @@ Use a YAML serializer for metadata inside a triple-backtick `yaml` code fence,
 followed by a blank line and the original body. Do not emit a `---` separator.
 Treat everything after the closing metadata fence and blank line as body text,
 even if it resembles another header or code fence. This presentation was updated
-at the user’s request after the live desktop test on 2026-11-14. Construct
+at the user’s request on 2026-11-14. Construct
 the header from bridge-controlled routing data. Optional `sender` display text
 may be included for group conversations when needed to distinguish participants;
 it is descriptive, not a permission or authority claim.
@@ -220,7 +209,7 @@ File name, MIME type, and size belong in download results unless needed earlier.
 
 ## Telegram input handling
 
-Use long polling so desktop and VPS setup need no public webhook endpoint.
+Use long polling so local and VPS setup need no public webhook endpoint.
 Telegram's `getUpdates` supports offsets and allowed update types, and cannot run
 alongside a configured webhook. See [Telegram update delivery](https://core.telegram.org/bots/api#getupdates).
 
@@ -263,7 +252,7 @@ ambiguity error. Never choose the last active connection implicitly.
 
 | Tool | Arguments besides `connection_id` | Result |
 | --- | --- | --- |
-| `get_protocol_docs` | None; no connection argument | Enabled protocols, connections, bootstrap and delivery rules |
+| `get_protocol_docs` | None; no connection argument | Enabled protocols, connections, owned binding and delivery rules |
 | `telegram_send_text` | `text: string` | Sent message ID |
 | `telegram_send_images` | `paths: string[]`, optional `caption: string` | Sent message IDs |
 | `telegram_send_file` | `path: string`, optional `caption: string` | Sent message ID |
@@ -295,8 +284,8 @@ See [Telegram file retrieval](https://core.telegram.org/bots/api#getfile).
 Use generated local filenames inside a configured download directory; preserve
 the original name as metadata. Resolve handles only for their bound connection.
 Upload paths must be readable local files on the bridge host. The Codex session
-and bridge should share a host/filesystem in v1; a desktop cannot dereference a
-VPS path automatically. Image downloads should expose MCP image content where
+and bridge must share a host/filesystem in v1; paths on another host cannot be
+dereferenced automatically. Image downloads should expose MCP image content where
 the host supports it, rather than assuming a path makes the image visible.
 Downloading audio does not imply transcription; no paid speech API is introduced.
 
@@ -373,61 +362,29 @@ between checking and submitting, reconcile and make one bounded retry only after
 a definite non-delivery response. A timeout or lost response is an unknown
 outcome; do not blindly call `turn/start` and risk duplicate execution.
 
-### Desktop app
-
-The verified path uses the same-user desktop coordination socket, conventionally
-`~/.codex/ipc/ipc.sock`, to discover the bound chat's owner and forward a
-`thread-follower-steer-turn` request. The owner selects the actual active turn.
-This is internal, version-specific IPC. Check socket ownership and surface
-incompatibility; do not modify app authorization or impersonate another client.
-
-Idle delivery was separately verified through `codex queue --thread … --message
-…` for a loaded idle desktop chat. Active delivery must use steering. Do not
-use queue as the default for every message or as fallback after an ambiguous
-steering failure.
-
-The desktop state/lifecycle observer uses the owner's snapshot and revisioned
-patch stream to stop typing at turn completion and reconcile state. Do not read
-chat history on every typing refresh. Revalidate this private interface after
-desktop upgrades before claiming compatibility.
-
-For desktop idle wake-up, a state check followed by `codex queue` is not atomic:
-another actor may start a turn between those operations. Resolve this with a
-verified owner-side delivery operation if available, or explicitly test and
-document the narrow race. Do not claim the combination already guarantees
-immediate steering in every race. App-closed and unloaded-chat wake-up remain
-outside the demonstrated support boundary.
-
 ## Evidence and remaining validation
 
-Tests used desktop-bundled Codex `0.169.0-alpha.11.1` on 2026-11-14. Current
-evidence and acceptance boundaries are in [docs/validation.md](docs/validation.md).
+Current evidence and acceptance boundaries are in
+[docs/validation.md](docs/validation.md). Automated checks cover the application-owned
+binding, authenticated MCP endpoint, child startup and shutdown, restart/resume,
+active steering, idle start, uncertain responses, and turn-owned typing.
 
-| Behavior | Evidence |
-| --- | --- |
-| MCP identifies the calling desktop chat | Verified through `_meta.threadId` |
-| Desktop active-turn delivery from a real MCP process | Verified; injected message and acknowledgment retained the same turn ID |
-| Loaded desktop idle chat wakes | Verified through CLI queue after prior turn completion |
-| Standalone `turn/steer` on a fresh idle chat | Verified rejection: `-32600`, `no active turn to steer` |
-| Standalone subscription login and active steering | Not yet integration-tested |
-| Desktop lifecycle observer and automatic active/idle routing | Implemented; live active subscription and steering verified, idle queue race documented |
-| Telegram tools, listeners, and typing lifecycle | Implemented; live sends/downloads/refresh verified, completion cancellation covered by deterministic tests |
-
-The idle App Server test used an isolated ephemeral chat without a model request.
-It establishes idle rejection, not subscription authentication or post-turn
-reconnection behavior. Do not substitute it for a full VPS integration test.
+The installed App Server check uses an isolated unauthenticated home and verifies
+subscription login is required without making a model request. A fake Codex child
+exercises the real application process and loopback HTTP endpoint. Neither replaces
+full subscription-backed model execution, MCP callbacks, and approval/input testing.
 
 ## Implementation and acceptance
 
 The implementation includes the Telegram registry, config validation, envelope
 encoder, handles, tools, binding, delivery, lifecycle observation, and typing.
-Complete the desktop acceptance checks before describing it as plug and play.
-Keep the VPS path isolated until its full lifecycle is tested; do not advertise
-it as finished solely because the wire methods exist.
+Complete the integrated App Server acceptance checks before describing the
+application as production-ready; do not claim completion solely because the wire
+methods and local test fixtures work.
 
 Required checks:
 
-- Bootstrap binds only the intended chat; restarting preserves the binding;
+- Startup creates/resumes only the application-owned chat; restarting preserves the binding;
   another chat/process cannot silently take it over.
 - Two connections sharing one bot use one poller and route independently into
   the same Codex chat. Unconfigured conversations are ignored.
@@ -443,7 +400,7 @@ Required checks:
   turn completion/failure/interruption, and survives ordinary outbound sends.
   Test two connections, repeated `True`, old-turn completion, shutdown, and
   disconnects. Test timing with a fake clock plus one real bot smoke test.
-- VPS acceptance additionally covers subscription login, restart/resume,
+- Integrated acceptance covers subscription login, restart/resume,
   active-turn steering, idle wake-up, MCP callbacks, and approval/input states.
 - Logs contain operational errors and delivery outcomes, not tokens, authenticated
   file URLs, or full message bodies by default.

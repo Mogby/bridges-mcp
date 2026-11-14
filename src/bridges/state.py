@@ -8,8 +8,8 @@ from .errors import BridgeError
 
 
 class InstanceState:
-    def __init__(self, root: Path, instance_id: str, mode: str):
-        self.root, self.instance_id, self.mode = root, instance_id, mode
+    def __init__(self, root: Path, instance_id: str):
+        self.root, self.instance_id = root, instance_id
         self.directory = root / instance_id
         self.binding_path = self.directory / "binding.json"
         self.locks = []
@@ -41,7 +41,7 @@ class InstanceState:
             data = json.loads(self.binding_path.read_text())
             if (
                 data["instance_id"] != self.instance_id
-                or data["mode"] != self.mode
+                or data["mode"] != "app_server"
                 or not isinstance(data["thread_id"], str)
                 or not data["thread_id"]
             ):
@@ -50,7 +50,7 @@ class InstanceState:
         except (ValueError, KeyError):
             raise BridgeError(
                 "binding_conflict",
-                "Saved binding is invalid or belongs to another mode; use reset-binding.",
+                "Saved binding is invalid or is not an App Server binding; stop Bridges and use reset-binding.",
             ) from None
 
     def save(self, thread_id):
@@ -61,7 +61,8 @@ class InstanceState:
         fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w") as stream:
             json.dump(
-                {"instance_id": self.instance_id, "mode": self.mode, "thread_id": thread_id}, stream
+                {"instance_id": self.instance_id, "mode": "app_server", "thread_id": thread_id},
+                stream,
             )
             stream.flush()
             os.fsync(stream.fileno())

@@ -89,7 +89,7 @@ class Registry:
         self.specs = [
             ToolSpec(
                 "get_protocol_docs",
-                "Initialize chat binding and read enabled bridge protocols and tools.",
+                "Read enabled bridge protocols, tools, and the application-owned chat binding.",
                 {},
             )
         ]

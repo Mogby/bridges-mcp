@@ -1,6 +1,5 @@
 import jsonschema
 from mcp.server.lowlevel import Server
-from mcp.server.stdio import stdio_server
 
 from .registry import INSTRUCTIONS
 from .runtime import result
@@ -32,8 +31,3 @@ def create_server(runtime):
         return await runtime.call(name, arguments, metadata)
 
     return server
-
-
-async def run_stdio(server):
-    async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())

@@ -36,7 +36,7 @@ class Runtime:
         self.thread_id = state.read()
         self.ready = False
         self.worker = None
-        self.bind_lock = asyncio.Lock()
+        self.start_lock = asyncio.Lock()
 
     def enqueue(self, envelope):
         try:
@@ -44,30 +44,30 @@ class Runtime:
         except asyncio.QueueFull:
             log.warning("inbound_dropped reason=buffer_full")
 
-    async def start_bound(self):
-        self.ready = True
-        if self.worker is None:
+    async def start(self, url, bearer):
+        """The application, never an MCP caller, creates or resumes the destination."""
+        async with self.start_lock:
+            if self.ready:
+                return
+            await self.transport.launch(url, bearer)
+            thread_id = await self.transport.bind(self.thread_id)
+            self.store.save(thread_id)
+            self.thread_id = thread_id
+            self.ready = True
             self.worker = asyncio.create_task(self.deliver_loop())
-        await self.telegram.start()
+            await self.telegram.start()
 
-    async def bootstrap(self, caller):
-        async with self.bind_lock:
-            if self.thread_id and self.thread_id != caller:
-                raise BridgeError(
-                    "binding_conflict",
-                    "This Bridges instance is bound to a different chat. Use a local reset to change it.",
-                )
-            if not self.ready:
-                await self.transport.bind(caller)
-                self.store.save(caller)
-                self.thread_id = caller
-                await self.start_bound()
-            return self.registry.docs(self.thread_id)
-
-    async def restore(self):
-        if self.thread_id:
-            await self.transport.bind(self.thread_id)
-            await self.start_bound()
+    def protocol_docs(self, caller):
+        if not self.ready:
+            raise BridgeError(
+                "not_ready",
+                "The App Server session is still starting; no chat can claim this instance.",
+            )
+        if caller != self.thread_id:
+            raise BridgeError(
+                "binding_conflict", "Only the bridge-owned App Server chat may use this instance."
+            )
+        return self.registry.docs(self.thread_id)
 
     async def deliver_loop(self):
         while True:
@@ -87,11 +87,11 @@ class Runtime:
             if name not in self.registry.by_name:
                 raise BridgeError("unknown_tool", "This tool is not enabled.")
             if name == "get_protocol_docs":
-                return result(await self.bootstrap(caller))
+                return result(self.protocol_docs(caller))
             if not self.ready or caller != self.thread_id:
                 raise BridgeError(
                     "binding_conflict",
-                    "Only the bound chat may use communication tools; initialize with get_protocol_docs.",
+                    "Only the ready, bridge-owned App Server chat may use communication tools.",
                 )
             connection_id, connection = self.telegram.connection(arguments.get("connection_id"))
             if name == "telegram_send_text":
@@ -160,6 +160,7 @@ class Runtime:
             )
 
     async def close(self):
+        self.ready = False
         await self.typing.close()
         await self.telegram.close()
         if self.worker:

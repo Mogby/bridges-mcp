@@ -5,29 +5,30 @@ subscription. One Python application owns incoming long polling, Codex delivery,
 and MCP tools for sending messages, downloading attachments, and maintaining typing.
 No OpenAI API key is used.
 
-Incoming messages steer a busy chat. Loaded idle desktop chats use `codex queue`;
-the standalone App Server transport uses `turn/start`. Ordinary assistant replies
-are **not** forwarded to Telegram: the agent must use a Bridges send tool.
+Incoming messages steer the owned App Server chat while it is busy and start a
+turn when it is idle. Ordinary assistant replies are **not** forwarded to Telegram:
+the agent must use a Bridges send tool.
+
+Bridges runs as a standalone application on your machine or VPS. It launches its
+own Codex App Server process and creates or resumes one persistent chat. It does
+not attach to a chat in the Codex desktop app or run as a desktop stdio MCP server.
 
 ## Status
 
-The desktop path has been tested on macOS with desktop-bundled Codex
-`0.169.0-alpha.11.1`. Live checks covered real Telegram input steering the active
-chat, all send/download tools, inline image content, typing refreshes, and the
-desktop lifecycle subscription. Desktop IPC is private and version-specific.
+App Server is the only supported transport. The runner is still **experimental**:
+full subscription-backed model execution, MCP callbacks, and interactive
+approval/input handling need an integrated acceptance run. It preserves pending
+approval/input requests without answering them and currently has no operator UI
+for resolving them. Existing Codex approval and sandbox policy remains in force.
 
-The VPS App Server runner is implemented but **experimental**: subscription-backed
-restart/resume, model execution, MCP callbacks, and interactive approval/input
-handling still need an integrated VPS acceptance run. It preserves pending
-approval/input requests without answering them. It currently has no operator UI
-for resolving those requests; it must not be used to bypass your Codex policy.
-
-See [validation evidence and remaining checks](docs/validation.md) and the
+Automated tests cover startup, authenticated loopback MCP access, restart/resume,
+child shutdown, delivery decisions, and typing lifecycle. See
+[validation evidence and remaining checks](docs/validation.md) and the
 [design](DESIGN.md).
 
 ## Install
 
-Requires Python 3.11+ on macOS or Linux, an installed Codex executable, and a
+Requires Python 3.11+ on macOS or Linux, an installed Codex CLI executable, and a
 subscription login on the same host. Windows is not supported in this release.
 
 ```sh
@@ -35,15 +36,15 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
-The installed entry point is `.venv/bin/bridges`. Use absolute paths in MCP
-registration. For a regular installation, `pip install .` also works.
+The installed entry point is `.venv/bin/bridges`. For a regular installation,
+`pip install .` also works.
 
 ## Create and configure a Telegram bot
 
 1. Create a bot with Telegram's [@BotFather](https://t.me/BotFather) using `/newbot`.
 2. Supply its token through an environment variable named in your configuration,
    such as `TELEGRAM_BOT_TOKEN`. Never put tokens in YAML or commit them.
-3. Copy [examples/desktop.yaml](examples/desktop.yaml) to a private local file.
+3. Copy [examples/app-server.yaml](examples/app-server.yaml) to a private local file.
 4. Open a private conversation with the bot and send `/start`. For a group, invite
    the bot and send it a message it can see.
 5. Discover the chat ID, then replace the example `chat_id` with the returned string:
@@ -68,8 +69,8 @@ A minimal configuration:
 ```yaml
 instance_id: personal
 codex:
-  mode: desktop
   executable: /absolute/path/to/codex
+  cwd: /absolute/path/to/workspace
 telegram:
   bots:
     main:
@@ -92,38 +93,60 @@ Optional settings: `state_dir` (default `~/.local/state/bridges`), `download_dir
 `attachment_limit` (4096), and `attachment_ttl_seconds` (86400).
 Configuration changes and token rotations require a process restart.
 
-## Connect a desktop chat
+## Run one persistent Codex session
 
-Ensure the desktop app's MCP process inherits the token environment variable.
-Launching a GUI app from Finder may not inherit your terminal's environment; a
-local launcher can load your secret from a protected file into that variable
-before executing `bridges`. Keep the launcher and secret outside version control.
-
-Register the server as `bridges`:
+Log in on the bridge host with the subscription flow, then start Bridges with its
+token environment variable available:
 
 ```sh
-codex mcp add bridges -- /absolute/path/bridges-mcp/.venv/bin/bridges \
-  serve --config /absolute/path/bridges.yaml
+codex login
+.venv/bin/bridges serve --config /absolute/path/bridges.yaml
 ```
 
-Refresh MCP connections or restart the desktop app. In the **one selected chat**,
-ask the agent to call `bridges.get_protocol_docs()` and discover its tools. This
-first call binds the instance using the host's `_meta.threadId`. Polling starts
-only after the desktop owner is reachable and its state can be observed.
+One application owns the entire lifecycle:
 
-The same binding is reused after restart only after reachability validation.
-Other chats cannot silently take over or use send/download/typing tools. Another
-process using the same instance or bot fails its lock rather than starting a
-second poller. All instances sharing bots must use the same `state_dir`.
+1. Bind an authenticated, loopback-only MCP endpoint on `127.0.0.1`.
+2. Launch a `codex app-server --stdio` child using your existing subscription login.
+3. Create a chat on first start, or resume the saved chat after restart.
+4. Validate its live state, then start the configured Telegram pollers.
 
-To intentionally select a different chat, stop the MCP process, then run:
+Send a Telegram message to the configured bot to start work. Tell the agent where
+to send replies; for example, “Reply to my messages through Telegram.” The agent
+reads `get_protocol_docs` when it first receives bridge input. That tool reports
+the application-owned binding and cannot change the destination chat.
+
+The child receives a process-local MCP URL and bearer token through configuration
+overrides. It connects to the existing endpoint instead of spawning another
+bridge. No global Codex config is rewritten and no separate `codex mcp add`
+registration is needed. `codex.port` defaults to `0` to choose an available
+loopback port; `codex.mode`, if supplied, accepts only `app_server`.
+
+The runner verifies a ChatGPT account and removes OpenAI API-key environment
+fallbacks from the child. It does not copy credentials or override Codex
+approval/sandbox settings. Use the same host/filesystem for the bridge and Codex.
+
+Stop the application with Ctrl-C or SIGTERM; its listeners, endpoint, and child
+process shut down together. Your process supervisor can run this same command
+and restart it after failure. A second process using the same instance or bot
+fails its lock rather than starting another poller. All instances sharing bots
+on a host must use the same `state_dir`; locks are not shared across hosts.
+
+To start a fresh chat, stop Bridges and clear its binding:
 
 ```sh
 .venv/bin/bridges reset-binding --config /absolute/path/bridges.yaml
 ```
 
-Bootstrap the new chat after restarting the server. Do not register a separate
-listener service. Desktop polling ends when the MCP connection closes.
+The next `serve` creates a new App Server chat. Reset does not disconnect a running
+process or delete the old chat. A docs/tool call cannot select an existing chat.
+
+### Migrating from the former desktop mode
+
+Stop the old bridge and remove its desktop MCP registration. Set `codex.mode` to
+`app_server` (or omit it), remove `codex.ipc_path`, and set the workspace `codex.cwd`.
+Old desktop configs are rejected. If reusing its `instance_id` and `state_dir`,
+run `reset-binding` with the updated config before starting the application; old
+desktop chat bindings are deliberately not resumed.
 
 ## Message format and tools
 
@@ -149,7 +172,7 @@ stay server-side in bounded, expiring handles.
 
 | Tool | Purpose |
 | --- | --- |
-| `get_protocol_docs` | Bootstrap, enabled protocols, connections, and reply rules |
+| `get_protocol_docs` | Owned chat binding, enabled protocols, connections, and reply rules |
 | `telegram_send_text` | Plain text, up to 4096 characters |
 | `telegram_send_images` | Ordered local images; caption on first, up to 1024 characters |
 | `telegram_send_file` | One local file with optional caption |
@@ -178,27 +201,6 @@ with `delivery_unknown` must not be blindly retried. Partial image batches repor
 `completed_message_ids`, the zero-based `failed_index`, and whether the failed
 send's outcome is unknown. Payloads are validated before the first upload.
 
-## VPS / standalone App Server (experimental)
-
-Use [examples/app-server.yaml](examples/app-server.yaml). Log in on the VPS with
-`codex login` using the subscription flow, then run one process:
-
-```sh
-.venv/bin/bridges serve --config /absolute/path/app-server.yaml
-```
-
-Bridges binds an authenticated, loopback-only MCP endpoint before launching its
-own `codex app-server --stdio` child. The child receives a process-local MCP URL
-and bearer token through configuration overrides. It connects to that endpoint
-instead of spawning another bridge. No global Codex config is rewritten.
-
-The runner verifies a ChatGPT account and removes OpenAI API-key environment
-fallbacks from the child. Existing Codex approval/sandbox settings remain in
-force. The chat ID is persisted and resumed on restart; messages are not persisted.
-A supervisor may restart the single application after a child or endpoint failure.
-Pending approvals and input remain active states and are not answered by incoming
-messages. See the status limitations above before deploying this mode.
-
 ## Delivery limits and operations
 
 This release deliberately has no durable inbox or exactly-once guarantee.
@@ -207,15 +209,14 @@ memory. Overflow and failed deliveries are logged locally and dropped. Restart
 may replay pending Telegram updates. Delivery decisions are serialized only until
 submission acknowledgement, never until the model turn finishes.
 
-Desktop observation uses the same-user coordination socket, normally
-`~/.codex/ipc/ipc.sock`, with an owner snapshot followed by revisioned patches.
-A protocol mismatch or patch gap stops typing and requires a fresh snapshot.
-No private app-tools socket or authorization bypass is used.
+Delivery uses `turn/steer` with the observed active turn ID or `turn/start` while
+idle. A definite turn-boundary rejection allows one reconciled retry; a timeout
+or lost response is an unknown outcome and is not retried. Turn notifications
+and status snapshots stop typing when ownership cannot be verified.
 
-Desktop idle delivery has a narrow race: a turn can start between the state check
-and CLI queue submission, so that message may wait for the next turn. Queue is
-never a fallback after an ambiguous steering timeout. App-closed and unloaded-chat
-wake-up are unsupported. The App Server transport uses explicit lifecycle methods.
+Pending approval/input requests remain active states. Incoming messages do not
+approve an operation or answer a pending request. There is no operator UI for
+these requests yet; do not treat this runner as an unattended approval mechanism.
 
 Logs contain operational codes and outcomes, not message bodies, bot tokens,
 authenticated download URLs, or raw upstream exceptions. Runtime state and secrets

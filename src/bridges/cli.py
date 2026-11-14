@@ -18,11 +18,10 @@ from starlette.routing import Route
 from .config import load_config
 from .errors import BridgeError
 from .runtime import Runtime
-from .server import create_server, run_stdio
+from .server import create_server
 from .state import InstanceState
 from .telegram import TelegramAPI
 from .transports.app_server import AppServerTransport
-from .transports.desktop import DesktopTransport
 
 
 class BearerEndpoint:
@@ -76,11 +75,7 @@ async def run_app_server(runtime, server):
                         "endpoint_unavailable", "Loopback MCP endpoint failed to start."
                     )
                 await asyncio.sleep(0.01)
-            await runtime.transport.launch(f"http://127.0.0.1:{port}/mcp", bearer)
-            thread_id = await runtime.transport.bind(runtime.thread_id)
-            runtime.store.save(thread_id)
-            runtime.thread_id = thread_id
-            await runtime.start_bound()
+            await runtime.start(f"http://127.0.0.1:{port}/mcp", bearer)
             logging.getLogger(__name__).info("app_server_ready")
             waiters = [
                 asyncio.create_task(stop.wait()),
@@ -109,28 +104,23 @@ async def run_app_server(runtime, server):
 
 
 async def run(config, tokens):
-    state = InstanceState(config.state_path, config.instance_id, config.codex.mode)
+    state = InstanceState(config.state_path, config.instance_id)
     state.acquire(tokens.values())
-    transport = (
-        DesktopTransport(config.codex)
-        if config.codex.mode == "desktop"
-        else AppServerTransport(config.codex)
-    )
+    transport = AppServerTransport(config.codex)
     runtime = None
     try:
         runtime = Runtime(config, state, transport, tokens)
         server = create_server(runtime)
-        if config.codex.mode == "desktop":
-            if runtime.thread_id:
-                try:
-                    await runtime.restore()
-                except BridgeError:
-                    logging.getLogger(__name__).warning(
-                        "binding_not_reachable waiting_for_bootstrap"
-                    )
-            await run_stdio(server)
-        else:
-            await run_app_server(runtime, server)
+        await run_app_server(runtime, server)
+    except BaseExceptionGroup as group:
+        # The SDK's task group wraps startup errors. Keep expected operational
+        # failures concise at the CLI boundary, including missing subscription login.
+        cause = group
+        while isinstance(cause, BaseExceptionGroup) and len(cause.exceptions) == 1:
+            cause = cause.exceptions[0]
+        if isinstance(cause, (BridgeError, OSError, TimeoutError)):
+            raise cause from None
+        raise
     finally:
         if runtime:
             await runtime.close()
@@ -147,7 +137,7 @@ async def discover_telegram(config, bot=None):
             )
         bot = next(iter(config.telegram.bots))
     token = config.token(bot)
-    state = InstanceState(config.state_path, config.instance_id, config.codex.mode)
+    state = InstanceState(config.state_path, config.instance_id)
     state.acquire([token])
     api = TelegramAPI(token)
     try:
@@ -192,7 +182,7 @@ async def discover_telegram(config, bot=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="One-process Telegram bridge and MCP server for one Codex chat."
+        description="Telegram bridge with one persistent Codex App Server session."
     )
     parser.add_argument(
         "command",
@@ -215,13 +205,13 @@ def main():
         if args.command == "discover-telegram":
             asyncio.run(discover_telegram(config, args.bot))
         elif args.command == "reset-binding":
-            state = InstanceState(config.state_path, config.instance_id, config.codex.mode)
+            state = InstanceState(config.state_path, config.instance_id)
             state.acquire()
             try:
                 state.reset()
             finally:
                 state.close()
-            print("Binding reset. Bootstrap the intended chat before polling resumes.")
+            print("Binding reset. The next start creates a new App Server chat.")
         elif args.command == "validate":
             config.tokens()
             print("Configuration and token environment variables are valid.")

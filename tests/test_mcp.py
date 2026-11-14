@@ -1,17 +1,13 @@
 import asyncio
-import json
-import os
-import sys
-from pathlib import Path
 
 import anyio
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
 
 from bridges.server import create_server
 
 
 async def test_sdk_roundtrip_metadata_discovery_and_errors(runtime):
+    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
     server = create_server(runtime)
     client_send, server_receive = anyio.create_memory_object_stream(10)
     server_send, client_receive = anyio.create_memory_object_stream(10)
@@ -40,19 +36,3 @@ async def test_sdk_roundtrip_metadata_discovery_and_errors(runtime):
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-
-
-async def test_stdio_process_handshake_and_empty_tools(tmp_path):
-    config = tmp_path / "config.yaml"
-    config.write_text(f"instance_id: empty\nstate_dir: {tmp_path}\n")
-    params = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "bridges.cli", "serve", "--config", str(config)],
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
-    )
-    async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
-        await client.initialize()
-        listing = await client.list_tools()
-        assert [tool.name for tool in listing.tools] == ["get_protocol_docs"]
-        result = await client.call_tool("get_protocol_docs")
-        assert result.isError and json.loads(result.content[0].text)["code"] == "binding_conflict"

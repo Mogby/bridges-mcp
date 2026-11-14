@@ -79,7 +79,11 @@ class AppServerTransport(Transport):
                 params["cwd"] = self.config.cwd
             result = await self.rpc.request("thread/start", params)
         self.thread_id = result["thread"]["id"]
-        await self.snapshot()
+        state = await self.snapshot()
+        if state.status not in {"active", "idle"}:
+            raise BridgeError(
+                "codex_unavailable", "Cannot observe the App Server chat; polling has not started."
+            )
         return self.thread_id
 
     def event(self, message):

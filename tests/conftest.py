@@ -15,8 +15,12 @@ class FakeTransport(Transport):
         self.delivered = []
         self.update(TurnState("active", "turn-1"))
 
-    async def bind(self, thread_id):
-        self.thread_id = thread_id
+    async def launch(self, url, bearer):
+        self.endpoint = url
+
+    async def bind(self, thread_id=None):
+        self.thread_id = thread_id or "chat"
+        return self.thread_id
 
     async def snapshot(self):
         return self.state
@@ -48,7 +52,7 @@ def config(tmp_path):
 
 @pytest.fixture
 async def runtime(config):
-    state = InstanceState(config.state_path, config.instance_id, "desktop")
+    state = InstanceState(config.state_path, config.instance_id)
     state.acquire()
     api = AsyncMock()
 

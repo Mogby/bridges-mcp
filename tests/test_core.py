@@ -46,18 +46,18 @@ def test_empty_registry():
 
 
 def test_binding_persistence_and_lock(tmp_path):
-    first = InstanceState(tmp_path, "test", "desktop")
+    first = InstanceState(tmp_path, "test")
     first.acquire(["token"])
     first.save("chat-one")
     assert first.read() == "chat-one"
     for name in ["test", "other"]:
-        second = InstanceState(tmp_path, name, "desktop")
+        second = InstanceState(tmp_path, name)
         with pytest.raises(BridgeError, match="running"):
             second.acquire(["token"])
     with pytest.raises(BridgeError):
         first.save("chat-two")
     first.close()
-    restarted = InstanceState(tmp_path, "test", "desktop")
+    restarted = InstanceState(tmp_path, "test")
     restarted.acquire(["token"])
     assert restarted.read() == "chat-one"
     restarted.reset()
@@ -159,8 +159,13 @@ def test_handles_expire_bound_and_evicted():
         handles.get(second, "one", {"audio"})
 
 
-async def test_bootstrap_and_every_tool_enforces_identity(runtime):
+async def test_startup_and_every_tool_enforces_identity(runtime):
     assert not runtime.telegram.tasks
+    unready = await runtime.call("get_protocol_docs", {}, {"threadId": "other"})
+    assert unready.isError and unready.structuredContent["code"] == "not_ready"
+    assert runtime.thread_id is None and runtime.store.read() is None
+    assert not runtime.telegram.tasks
+    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
     docs = await runtime.call("get_protocol_docs", {}, {"threadId": "chat"})
     assert not docs.isError
     assert len(runtime.telegram.tasks) == 1  # two connections, one bot/poller
@@ -178,7 +183,7 @@ async def test_bootstrap_and_every_tool_enforces_identity(runtime):
 
 
 async def test_bounded_burst_submits_without_waiting_for_turn(runtime):
-    await runtime.bootstrap("chat")
+    await runtime.start("http://127.0.0.1:8000/mcp", "test-bearer")
     for i in range(runtime.config.buffer_size + 5):
         runtime.enqueue(str(i))
     assert runtime.queue.qsize() == runtime.config.buffer_size
