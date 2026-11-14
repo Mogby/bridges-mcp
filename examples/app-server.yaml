@@ -1,0 +1,14 @@
+instance_id: vps
+codex:
+  mode: app_server
+  executable: codex
+  cwd: /srv/workspace
+  port: 0 # Choose an unused loopback port automatically.
+telegram:
+  bots:
+    main:
+      token_env: TELEGRAM_BOT_TOKEN
+  connections:
+    personal:
+      bot: main
+      chat_id: "123456789"
