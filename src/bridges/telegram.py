@@ -103,7 +103,8 @@ class TelegramAPI:
 
 
 def validate_text(text, limit, field, allow_empty=False):
-    # Telegram limits characters after entity parsing; no parse mode is used.
+    # Conservatively bound MarkdownV2 source length; Telegram validates the
+    # parsed text and formatting itself. Do not escape away intended markup.
     if not isinstance(text, str) or len(text) > limit or (not allow_empty and not text):
         raise BridgeError(
             "invalid_payload",
@@ -212,7 +213,9 @@ class TelegramBridge:
     async def send_text(self, connection, text):
         validate_text(text, 4096, "text")
         result = await self.clients[connection.bot].call(
-            "sendMessage", {**connection.destination(), "text": text}, mutating=True
+            "sendMessage",
+            {**connection.destination(), "text": text, "parse_mode": "MarkdownV2"},
+            mutating=True,
         )
         return {"message_id": result["message_id"]}
 
@@ -222,7 +225,7 @@ class TelegramBridge:
         with path.open("rb") as stream:
             result = await self.clients[connection.bot].call(
                 "sendDocument",
-                {**connection.destination(), "caption": caption},
+                {**connection.destination(), "caption": caption, "parse_mode": "MarkdownV2"},
                 files={"document": (path.name, stream)},
                 mutating=True,
             )
@@ -239,7 +242,11 @@ class TelegramBridge:
                 with path.open("rb") as stream:
                     result = await self.clients[connection.bot].call(
                         "sendPhoto",
-                        {**connection.destination(), "caption": caption if index == 0 else ""},
+                        {
+                            **connection.destination(),
+                            "caption": caption if index == 0 else "",
+                            "parse_mode": "MarkdownV2",
+                        },
                         files={"photo": (path.name, stream)},
                         mutating=True,
                     )

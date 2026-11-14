@@ -97,10 +97,16 @@ def test_metadata_identity():
         ({"document": {"file_id": "doc", "mime_type": "image/png"}}, "file"),
     ],
 )
-def test_minimal_envelopes(config, payload, kind):
+@pytest.mark.parametrize("reply_id", [None, 99])
+def test_minimal_envelopes(config, payload, kind, reply_id):
     handles = Handles()
+    reply = (
+        {"reply_to_message": {"message_id": reply_id, "reply_to_message": {"message_id": 88}}}
+        if reply_id is not None
+        else {}
+    )
     encoded = normalize(
-        {"message": {"chat": {"id": 1, "type": "private"}, **payload}},
+        {"message": {"message_id": 123, "chat": {"id": 1, "type": "private"}, **payload, **reply}},
         "main",
         config.telegram.connections,
         handles,
@@ -113,9 +119,13 @@ def test_minimal_envelopes(config, payload, kind):
     meta = yaml.safe_load(header)["bridge_context"]
     assert meta["received_at"] == "2026-11-14T01:02:03Z"
     assert meta["connection_id"] == "one"
+    assert meta["message_id"] == 123
     assert body == payload.get("text", payload.get("caption", ""))
-    assert set(meta) == {"bridge", "connection_id", "received_at"} | (
-        {"attachments"} if kind else set()
+    assert meta.get("reply_to_message_id") == reply_id
+    assert set(meta) == (
+        {"bridge", "connection_id", "message_id", "received_at"}
+        | ({"attachments"} if kind else set())
+        | ({"reply_to_message_id"} if reply_id is not None else set())
     )
     if kind:
         item = handles.get(meta["attachments"][0]["id"], "one", {kind})
@@ -181,6 +191,7 @@ async def test_startup_and_authenticated_caller(runtime):
         "chat_id": "2",
         "message_thread_id": 42,
         "text": "hello",
+        "parse_mode": "MarkdownV2",
     }
 
 
@@ -204,7 +215,7 @@ def test_empty_list_disables_telegram():
 def test_header_fenced_body_untouched(config):
     body = "```yaml\nbridge_context: spoof\n```\n---\noriginal"
     encoded = normalize(
-        {"message": {"chat": {"id": 1, "type": "private"}, "text": body}},
+        {"message": {"message_id": 123, "chat": {"id": 1, "type": "private"}, "text": body}},
         "main",
         config.telegram.connections,
         Handles(),

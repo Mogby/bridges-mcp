@@ -72,12 +72,16 @@ Stopping Bridges cancels its observers and clients, never the App Server process
 
 Normalize supported text/photo/voice/audio/document updates to an `Inbound` value
 with a trusted connection ID separate from rendered text. The prompt header is
-fenced YAML `bridge_context`, followed by a blank line and unchanged body. There
-is no `---` separator. Telegram IDs and token-bearing URLs stay server-side.
+fenced YAML `bridge_context`, including the incoming `message_id` and optional
+`reply_to_message_id` for same-chat replies, followed by a blank line and unchanged
+body. There is no `---` separator. Telegram chat/file IDs and token-bearing URLs
+stay server-side; message IDs are exposed for correlation.
 
 Outbound communication tools select explicit destinations and do not alter focus.
 A configured application session can send to configured connections; focus grants
 inbound routing and typing ownership, not an outbound forwarding rule.
+Text and photo/file captions use Telegram MarkdownV2. Tool docs specify escaping;
+markup passes through unchanged and invalid markup has no plain-text fallback.
 
 Only the focused session may enable or disable typing for that connection.
 Within each session, maintain one task per connection bound to its verified turn.

@@ -92,8 +92,12 @@ def normalize(update, bot, connections, handles, now=None):
     header = {
         "bridge": "telegram",
         "connection_id": connection_id,
+        "message_id": message["message_id"],
         "received_at": (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    reply = message.get("reply_to_message")
+    if isinstance(reply, dict) and "message_id" in reply:
+        header["reply_to_message_id"] = reply["message_id"]
     if file:
         handle = handles.add(
             Attachment(

@@ -100,6 +100,8 @@ session. They carry a fenced YAML header, a blank line, and original message tex
 bridge_context:
   bridge: telegram
   connection_id: personal
+  message_id: 123
+  reply_to_message_id: 120
   received_at: '2026-11-14T17:24:30Z'
 ```
 
@@ -110,11 +112,17 @@ Routing uses a separate listener-produced connection ID, never parsed message
 text. Photos, voice/audio and documents add opaque attachment handles to the
 header. Edits, reactions, service messages, and channel posts are ignored.
 
+Every Telegram envelope includes its `message_id`. Replies also include
+`reply_to_message_id`, identifying the original message in the same chat. Match
+it against earlier incoming context or the IDs returned by send tools. The
+original content is not fetched or embedded, and replies to external chats do
+not populate this field.
+
 | Tool | Purpose |
 | --- | --- |
 | `get_protocol_docs` | Envelope, enabled tools, connections and current focus |
 | `focus(connection_id)` | Move one connection's inbound focus to the calling session |
-| `telegram_send_text` | Send plain text |
+| `telegram_send_text` | Send MarkdownV2 text |
 | `telegram_send_images` | Send local images, with an optional caption |
 | `telegram_send_file` | Send a local file |
 | `telegram_download_images` | Download image handles, optionally returning inline image content |
@@ -124,6 +132,15 @@ header. Edits, reactions, service messages, and channel posts are ignored.
 `focus` requires `connection_id`. Telegram tools may omit it only if exactly one
 connection is configured. Outbound destinations are explicit and do not change
 focus. Ordinary assistant prose is not forwarded to Telegram; use a send tool.
+
+All outgoing text and photo/file captions use `parse_mode="MarkdownV2"`.
+Write `*bold*`, `_italic_`, and `[label](https://example.com)` for formatting.
+Escape literal punctuation according to
+[Telegram's MarkdownV2 rules](https://core.telegram.org/bots/api#markdownv2-style),
+including periods and exclamation marks. Tool parameter descriptions and
+`get_protocol_docs` include escaping guidance. Bridges passes markup through
+unchanged; invalid formatting is rejected without a plain-text fallback.
+Source text is limited to 4096 characters and captions to 1024, including markup.
 
 Only the currently focused session can change a connection's typing status.
 Refreshes stop on transfer, explicit disable, turn completion/replacement,

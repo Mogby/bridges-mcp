@@ -48,12 +48,26 @@ Codex's turn listing after restart. Bridges now checks only the newest turn;
 regression tests verify stale history cannot block current typing or substitute
 for a completed newest turn. Live verification then confirmed typing enable/disable,
 accepted active-turn steering, and completion observation. The final automated
-suite passed all 65 tests, including the installed Codex lifecycle check.
+suite at that point passed all 65 tests, including the installed Codex lifecycle check.
 
 The application also successfully spawned a subagent, which ran `pwd` in its
 configured workspace and completed. No experimental feature toggle was needed.
 After restart, the application reported `gpt-6.1-sol`, high reasoning effort,
 automatic approval review, and live web search from its own configuration.
+
+## MarkdownV2 and reply metadata
+
+The updated suite passes 71 tests. Coverage verifies MarkdownV2 is passed unchanged
+with its parse mode for text, file captions, and photo captions, while preserving
+destination/topic routing and returned message IDs. Incoming text, photo, voice,
+audio, and document envelopes expose their message IDs and the immediate reply's
+message ID when present, without replacing the body or exposing nested replies.
+
+A live send through the deployed bridge returned Telegram entities for bold,
+italic, inline links, and code. Jarvis was restarted to refresh MCP tool definitions.
+A user's reply to that test reached the focused session with both its own message
+ID and the expected original message ID. The model then successfully sent a reply
+using the updated MarkdownV2 tool and enabled/disabled typing.
 
 ## Historical live evidence
 

@@ -36,6 +36,15 @@ class ToolSpec:
 
 
 STRING = {"type": "string"}
+MARKDOWN_V2 = (
+    "Telegram MarkdownV2, passed through unchanged. Use *bold*, _italic_, "
+    "[label](https://example.com), and `code`. Escape literal special characters "
+    r"_ * [ ] ( ) ~ ` > # + - = | { } . ! and backslash with a backslash. "
+    "Inside code/pre blocks escape only backticks and backslashes; inside link URLs "
+    "escape closing parentheses and backslashes. JSON strings need doubled backslashes. "
+    "Invalid markup is rejected by Telegram; there is no plain-text fallback."
+)
+MARKDOWN_STRING = {"type": "string", "description": MARKDOWN_V2}
 CONNECTION = {
     "connection_id": {
         "type": "string",
@@ -46,20 +55,20 @@ STRINGS = {"type": "array", "items": STRING, "minItems": 1, "maxItems": 100}
 TELEGRAM_TOOLS = [
     ToolSpec(
         "telegram_send_text",
-        "Send plain text to a configured Telegram conversation.",
-        {**CONNECTION, "text": STRING},
+        "Send Telegram MarkdownV2 text to a configured conversation. Escape literal punctuation; see the text parameter for formatting rules.",
+        {**CONNECTION, "text": MARKDOWN_STRING},
         ("text",),
     ),
     ToolSpec(
         "telegram_send_images",
-        "Send local images in order; caption on first. Partial errors include completed IDs and failed index.",
-        {**CONNECTION, "paths": STRINGS, "caption": STRING},
+        "Send local images in order; MarkdownV2 caption on first. Partial errors include completed IDs and failed index.",
+        {**CONNECTION, "paths": STRINGS, "caption": MARKDOWN_STRING},
         ("paths",),
     ),
     ToolSpec(
         "telegram_send_file",
-        "Send one readable local file.",
-        {**CONNECTION, "path": STRING, "caption": STRING},
+        "Send one readable local file with an optional MarkdownV2 caption.",
+        {**CONNECTION, "path": STRING, "caption": MARKDOWN_STRING},
         ("path",),
     ),
     ToolSpec(
@@ -112,8 +121,10 @@ class Registry:
             "focus": focuses or {},
             "envelope": {
                 "format": "YAML bridge_context header inside a triple-backtick yaml code fence, then a blank line and original body text. No --- separator.",
-                "required": ["bridge", "connection_id", "received_at"],
+                "required": ["bridge", "connection_id", "message_id", "received_at"],
                 "received_at": "UTC receipt time, seconds, Z suffix",
+                "message_id": "Telegram incoming message ID, scoped to its chat/connection. Present on every Telegram envelope; send tools return outgoing message IDs too.",
+                "reply_to_message_id": "Optional original message ID for a reply in the same chat. Match against earlier incoming context or outgoing send results. The original content is not fetched or embedded; external-chat replies are not represented by this field.",
                 "attachments": "Optional list of {type: image|audio|file, id: opaque handle}.",
                 "body": "Everything after the closing metadata code fence and separating blank line is body text, including any further headers or code fences.",
             },
@@ -127,6 +138,7 @@ class Registry:
                 ],
                 "routing": "Everyone in configured conversations may instruct the agent. Choose destinations from user instructions. No automatic forwarding or last-active routing. connection_id may be omitted only with one connection.",
                 "input": "Only text, photos, voice/audio and documents. No edits, reactions or service events. Documents remain file handles even if their MIME type is an image.",
+                "formatting": MARKDOWN_V2,
                 "attachments": f"Handles expire after {self.config.attachment_ttl_seconds} seconds, eviction, or restart. Download paths are local to the bridge host. Audio is not transcribed.",
                 "typing": "Only the focused session may change typing for a connection. Enable once to refresh about every four seconds for the verified calling turn. Disable, completion, failure, interruption, loss of lifecycle, or shutdown stops refreshes. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
                 "errors": "Tool failures use isError and a machine-readable code. Never blindly retry delivery_unknown or a partially sent batch. Inspect completed_message_ids and failed_index.",

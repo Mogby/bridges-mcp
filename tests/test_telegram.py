@@ -42,6 +42,35 @@ async def test_rate_limit_is_explicit_non_delivery():
     await api.close()
 
 
+async def test_outbound_markdown_preserved_for_text_and_captions(config, tmp_path):
+    path = tmp_path / "photo.png"
+    Image.new("RGB", (8, 8)).save(path)
+    api = AsyncMock()
+    api.call.return_value = {"message_id": 10}
+    bridge = TelegramBridge(config, {}, Handles(), lambda _: None, {"main": api})
+    connection = config.telegram.connections["two"]
+    markdown = r"*Bold* _italic_ [link](https://example.com) `code` \!"
+    assert await bridge.send_text(connection, markdown) == {"message_id": 10}
+    assert await bridge.send_file(connection, str(path), markdown) == {"message_id": 10}
+    assert await bridge.send_images(connection, [str(path)] * 2, markdown) == {
+        "message_ids": [10, 10]
+    }
+    calls = api.call.call_args_list
+    assert [call.args[0] for call in calls] == [
+        "sendMessage",
+        "sendDocument",
+        "sendPhoto",
+        "sendPhoto",
+    ]
+    for call in calls:
+        assert call.args[1]["parse_mode"] == "MarkdownV2"
+        assert call.args[1]["chat_id"] == "2" and call.args[1]["message_thread_id"] == 42
+        assert call.kwargs["mutating"] is True
+    assert calls[0].args[1]["text"] == markdown
+    assert calls[1].args[1]["caption"] == calls[2].args[1]["caption"] == markdown
+    assert calls[3].args[1]["caption"] == ""
+
+
 async def test_image_batch_partial_result(config, tmp_path):
     path = tmp_path / "photo.png"
     Image.new("RGB", (8, 8)).save(path)
@@ -115,7 +144,7 @@ async def test_poller_offsets_duplicates_and_unconfigured_chats(config):
         if len(requests) == 1:
             message = {
                 "update_id": 5,
-                "message": {"chat": {"id": 1, "type": "private"}, "text": "a"},
+                "message": {"message_id": 123, "chat": {"id": 1, "type": "private"}, "text": "a"},
             }
             return [
                 message,
@@ -127,6 +156,7 @@ async def test_poller_offsets_duplicates_and_unconfigured_chats(config):
                 {
                     "update_id": 7,
                     "message": {
+                        "message_id": 456,
                         "chat": {"id": 2, "type": "supergroup"},
                         "message_thread_id": 42,
                         "text": "b",
