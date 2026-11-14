@@ -19,7 +19,7 @@ async def test_sdk_schema_and_no_unauthenticated_tools(runtime):
             initialized = await client.initialize()
             assert initialized.serverInfo.name == "bridges"
             assert "focus(" not in initialized.instructions
-            assert len((await client.list_tools()).tools) == 8
+            assert len((await client.list_tools()).tools) == 7
             denied = await client.call_tool(
                 "focus", {"connection_id": "one"}, meta={"threadId": "chat", "client_id": "app"}
             )

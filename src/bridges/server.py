@@ -6,7 +6,7 @@ from .runtime import result
 
 
 def create_server(runtime):
-    server = Server("bridges", version="0.2.0", instructions=INSTRUCTIONS)
+    server = Server("bridges", version="0.2.1", instructions=INSTRUCTIONS)
 
     @server.list_tools()
     async def list_tools():

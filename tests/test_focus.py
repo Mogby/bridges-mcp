@@ -31,18 +31,18 @@ async def test_focus_routes_independently_and_survives_restart(runtime):
     assert saved["one"] == {"client_id": "app", "thread_id": "other"}
 
 
-async def test_focus_cancels_only_displaced_typing_and_rejects_stale_disable(runtime):
+async def test_focus_cancels_only_displaced_typing_and_is_idempotent(runtime):
     await runtime.start()
     for connection in ["one", "two"]:
         await call(runtime, "focus", connection)
-        assert not (await call(runtime, "telegram_set_typing", connection, enabled=True)).isError
+        runtime.enqueue(Inbound(connection, "hello"))
+        await runtime.queue.join()
     old = runtime.typing[("app", "chat")]
     assert set(old.owners) == {"one", "two"}
     await call(runtime, "focus", thread="other")
     assert set(old.owners) == {"two"}
-    assert not (await call(runtime, "telegram_set_typing", thread="other", enabled=True)).isError
-    denied = await call(runtime, "telegram_set_typing", enabled=False)
-    assert denied.structuredContent["code"] == "not_focused"
+    runtime.enqueue(Inbound("one", "new owner"))
+    await runtime.queue.join()
     assert "one" in runtime.typing[("app", "other")].owners
     task = runtime.typing[("app", "other")].owners["one"].task
     await call(runtime, "focus", thread="other")
@@ -80,7 +80,7 @@ async def test_concurrent_focus_and_inflight_delivery_are_serialized(runtime):
         await release.wait()
         from bridges.transports.base import Delivery
 
-        return Delivery("accepted", "started")
+        return Delivery("accepted", "started", "turn-1")
 
     runtime.backends["app"].sessions["chat"].deliver = deliver
     runtime.enqueue(Inbound("one", "before"))
@@ -117,14 +117,15 @@ async def test_client_identity_is_part_of_focus_target(runtime):
     runtime.backends["second"] = FakeBackend()
     await runtime.start()
     await call(runtime, "focus")
-    await call(runtime, "telegram_set_typing", enabled=True)
+    runtime.enqueue(Inbound("one", "first owner"))
+    await runtime.queue.join()
     switched = await runtime.call("focus", {"connection_id": "one"}, {"threadId": "chat"}, "second")
     assert not switched.isError
     assert runtime.focuses["one"] == {"client_id": "second", "thread_id": "chat"}
     assert not runtime.typing[("app", "chat")].owners
     runtime.enqueue(Inbound("one", "belongs to second application"))
     await runtime.queue.join()
-    assert not runtime.backends["app"].sessions["chat"].delivered
+    assert runtime.backends["app"].sessions["chat"].delivered == ["first owner"]
     assert runtime.backends["second"].sessions["chat"].delivered == [
         "belongs to second application"
     ]

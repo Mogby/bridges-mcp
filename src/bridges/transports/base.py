@@ -13,6 +13,7 @@ class TurnState:
 class Delivery:
     outcome: Literal["accepted", "rejected", "unknown"]
     code: str
+    turn_id: str | None = None
 
 
 class Transport:

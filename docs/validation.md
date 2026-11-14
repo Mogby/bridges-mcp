@@ -85,3 +85,13 @@ in the owning application. There is no durable inbox, transcription, album
 coalescing, Discord/cron implementation, or distributed cross-host poller lock.
 No model-generated instruction is used to auto-focus a connection. Application
 instructions own that policy.
+
+## Automatic inbound typing
+
+Typing is started by accepted inbound delivery, without an agent MCP call. The
+removed `telegram_set_typing` name is absent from discovery and protocol tools
+and returns `unknown_tool` if a stale client invokes it. Lifecycle tests cover
+initial sends, idempotent steering, completion/interruption, replacement, stale
+acknowledgements, independent connections, focus transfer, disconnection,
+shutdown, slow requests, and recovery from Telegram failure/rate limiting.
+The HTTP and SDK discovery checks expect seven enabled tools.

@@ -83,12 +83,6 @@ TELEGRAM_TOOLS = [
         {**CONNECTION, "attachment_id": STRING},
         ("attachment_id",),
     ),
-    ToolSpec(
-        "telegram_set_typing",
-        "Maintain typing for the calling turn, or stop refreshes; visible cancellation may take five seconds.",
-        {**CONNECTION, "enabled": {"type": "boolean"}},
-        ("enabled",),
-    ),
 ]
 
 
@@ -140,7 +134,7 @@ class Registry:
                 "input": "Only text, photos, voice/audio and documents. No edits, reactions or service events. Documents remain file handles even if their MIME type is an image.",
                 "formatting": MARKDOWN_V2,
                 "attachments": f"Handles expire after {self.config.attachment_ttl_seconds} seconds, eviction, or restart. Download paths are local to the bridge host. Audio is not transcribed.",
-                "typing": "Only the focused session may change typing for a connection. Enable once to refresh about every four seconds for the verified calling turn. Disable, completion, failure, interruption, loss of lifecycle, or shutdown stops refreshes. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
+                "typing": "Bridges automatically starts typing when an incoming message is accepted into the focused session and refreshes about every four seconds for that turn. Completion, failure, interruption, replacement, focus transfer, loss of lifecycle, or shutdown stops refreshes. Agents do not manage typing. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
                 "errors": "Tool failures use isError and a machine-readable code. Never blindly retry delivery_unknown or a partially sent batch. Inspect completed_message_ids and failed_index.",
             }
         return docs

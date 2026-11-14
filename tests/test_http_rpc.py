@@ -47,7 +47,7 @@ async def test_http_auth_focus_and_host_identity(runtime):
         listed = (await client.post("/mcp", json=message, headers=headers)).json()["result"][
             "tools"
         ]
-        assert len(listed) == 8
+        assert len(listed) == 7
         focus = next(t for t in listed if t["name"] == "focus")
         assert focus["inputSchema"]["required"] == ["connection_id"]
 
@@ -119,7 +119,8 @@ async def test_completed_turn_not_resurrected_by_start_ack():
         return {"turn": {"id": "fast", "status": "inProgress"}}
 
     transport.backend.rpc.request.side_effect = request
-    assert (await transport.deliver("hello")).outcome == "accepted"
+    delivered = await transport.deliver("hello")
+    assert delivered.outcome == "accepted" and delivered.turn_id == "fast"
     assert transport.state == TurnState("idle")
 
 

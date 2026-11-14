@@ -83,11 +83,19 @@ inbound routing and typing ownership, not an outbound forwarding rule.
 Text and photo/file captions use Telegram MarkdownV2. Tool docs specify escaping;
 markup passes through unchanged and invalid markup has no plain-text fallback.
 
-Only the focused session may enable or disable typing for that connection.
-Within each session, maintain one task per connection bound to its verified turn.
-Repeated enable is idempotent. Disable/transfer synchronizes cancellation with
-pending refreshes. Turn completion, replacement, uncertainty, or disconnection
-cancels refreshes. The Telegram display can linger for its remaining expiry time.
+After an incoming message is accepted, its delivery acknowledgement identifies
+the owning turn. Start a background typing task immediately for that connection
+only if the accepted turn remains observable and active. No MCP typing tool is
+exposed. An acknowledgement for a completed or replaced turn cannot start typing.
+Steering more messages into the same turn is idempotent. Refresh about every four
+seconds, stopping on completion, interruption, replacement, uncertainty,
+disconnection, focus transfer, or shutdown. Wait for cancellation of pending
+refreshes before completing a focus transfer. Close typing tasks before Telegram
+clients. Telegram's visible indicator can linger for its remaining expiry time.
+
+Typing sends and retries are best effort and run outside the delivery worker;
+network failures and rate limits cannot block messages or other connections.
+Focus alone and rejected/uncertain deliveries never start typing.
 
 Attachment handles are connection-scoped, bounded, and ephemeral. Downloads use
 generated paths and return original names as metadata. File paths are local to

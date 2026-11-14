@@ -39,7 +39,7 @@ class AppServer:
             rpc = RPC(socket, on_event=self.event, on_disconnect=self.disconnected)
             try:
                 await rpc.request(
-                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.2.0"}}
+                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.2.1"}}
                 )
                 await rpc.send({"method": "initialized"})
             except BaseException:
@@ -189,7 +189,10 @@ class AppServerSession(Transport):
                         turn = result["turn"]
                         if turn.get("status", "inProgress") == "inProgress":
                             self.update(TurnState("active", turn["id"]))
-                    return Delivery("accepted", "steered" if method == "turn/steer" else "started")
+                    turn_id = result["turn"]["id"] if method == "turn/start" else state.turn_id
+                    return Delivery(
+                        "accepted", "steered" if method == "turn/steer" else "started", turn_id
+                    )
                 except RPCRejected as exc:
                     error = exc.response.get("error", {})
                     message = error.get("message", "") if isinstance(error, dict) else ""

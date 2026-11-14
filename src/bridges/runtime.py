@@ -97,6 +97,10 @@ class Runtime:
                     session = await self.session(target["client_id"], target["thread_id"])
                     delivery = await session.deliver(envelope.text)
                     log.info("inbound_delivery outcome=%s code=%s", delivery.outcome, delivery.code)
+                    if delivery.outcome == "accepted":
+                        await self.typing_for(target["client_id"], session).start(
+                            envelope.connection_id, delivery.turn_id
+                        )
             except BridgeError as exc:
                 log.warning("inbound_dropped code=%s", exc.code)
             except Exception:  # noqa: BLE001 - sanitize upstream failures
@@ -106,7 +110,7 @@ class Runtime:
 
     async def call(self, name, arguments, meta, client_id=None):
         try:
-            caller, turn = identity(meta)
+            caller, _ = identity(meta)
             if name not in self.registry.by_name:
                 raise BridgeError("unknown_tool", "This tool is not enabled.")
             if client_id not in self.backends:
@@ -119,21 +123,7 @@ class Runtime:
             async with self.connection_locks[connection_id]:
                 if name == "focus":
                     return result(await self.focus(connection_id, client_id, caller))
-                session = await self.session(client_id, caller)
-                if name == "telegram_set_typing":
-                    if self.focuses.get(connection_id) != {
-                        "client_id": client_id,
-                        "thread_id": caller,
-                    }:
-                        raise BridgeError(
-                            "not_focused",
-                            "Only the focused session may change typing for this connection.",
-                        )
-                    return result(
-                        await self.typing_for(client_id, session).set(
-                            connection_id, arguments["enabled"], turn
-                        )
-                    )
+                await self.session(client_id, caller)
             # Outbound tools have explicit destinations; focus controls inbound routing
             # and typing, not the user's choice of where to send a message.
             if name == "telegram_send_text":
@@ -201,11 +191,11 @@ class Runtime:
 
     async def close(self):
         self.ready = False
-        await self.telegram.close()
         if self.worker:
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)
         for manager in self.typing.values():
             await manager.close()
+        await self.telegram.close()
         for backend in self.backends.values():
             await backend.close()

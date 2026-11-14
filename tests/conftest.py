@@ -22,7 +22,7 @@ class FakeTransport(Transport):
 
     async def deliver(self, text):
         self.delivered.append(text)
-        return Delivery("accepted", "steered")
+        return Delivery("accepted", "steered", self.state.turn_id)
 
 
 class FakeBackend:

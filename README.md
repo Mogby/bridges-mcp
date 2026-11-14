@@ -127,7 +127,6 @@ not populate this field.
 | `telegram_send_file` | Send a local file |
 | `telegram_download_images` | Download image handles, optionally returning inline image content |
 | `telegram_download_file` | Download a document or audio handle; no transcription |
-| `telegram_set_typing` | Enable/disable refreshes for one focused connection and calling turn |
 
 `focus` requires `connection_id`. Telegram tools may omit it only if exactly one
 connection is configured. Outbound destinations are explicit and do not change
@@ -142,11 +141,19 @@ including periods and exclamation marks. Tool parameter descriptions and
 unchanged; invalid formatting is rejected without a plain-text fallback.
 Source text is limited to 4096 characters and captions to 1024, including markup.
 
-Only the currently focused session can change a connection's typing status.
-Refreshes stop on transfer, explicit disable, turn completion/replacement,
-disconnection, or service shutdown. Lifecycle is sampled approximately every
-second without taking ownership of the conversation. Telegram's visible indicator
-can linger until its expiry; sending a reply doesn't itself stop refreshes.
+Bridges starts typing automatically as soon as an incoming message is accepted
+into the focused session's active turn. There is no agent typing tool and no
+model/tool-approval round trip before the initial indicator. Refreshes run about
+every four seconds until that turn completes, fails, is interrupted/replaced,
+loses observable lifecycle, disconnects, or the service shuts down. Focus transfer
+cancels only the displaced connection's refreshes. Outbound messages do not stop
+refreshes. Telegram's visible indicator can linger for up to five seconds after
+refreshes stop.
+
+Typing is best effort and runs independently of inbound delivery. Telegram
+failures or slow typing requests never delay message delivery or focus transfers.
+Rejected or uncertain deliveries do not start typing; late acknowledgements never
+restart typing for a completed turn or attach it to a newer turn.
 
 Handles are bounded, connection-scoped, expire, and are lost on restart. Files
 are local to the bridge host. Sending has no exactly-once guarantee: uncertain
