@@ -39,8 +39,8 @@ python3 -m venv .venv
 The installed entry point is `.venv/bin/bridges`. For a regular installation,
 `pip install .` also works.
 
-For an always-on VPS with a separate agent workspace, see the
-[systemd deployment guide](deploy/systemd/README.md).
+Deployment-specific service files, workspaces, credentials, and Codex settings
+belong to the application using Bridges. See [deployment configuration](docs/deployment.md).
 
 ## Create and configure a Telegram bot
 

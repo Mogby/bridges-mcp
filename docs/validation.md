@@ -81,7 +81,7 @@ the working directory, reviewer, approval policy, and workspace-write sandbox.
 Systemd restart shut down cleanly and resumed the same bound thread. Three
 subsequent inbound messages each produced a successful model-originated Telegram
 send through MCP, verifying that the renewed endpoint works after resume.
-See the [deployment guide](../deploy/systemd/README.md) for configuration and paths.
+The tested bot's service files and private configuration live outside this repository.
 
 ## Remaining acceptance boundaries
 

@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-TELEGRAM_BOT_TOKEN=$(cat "${CREDENTIALS_DIRECTORY:?}/telegram-token")
-export TELEGRAM_BOT_TOKEN
-exec /opt/bridges-mcp/.venv/bin/bridges serve --config /etc/bridges/jarvis.yaml
