@@ -1,0 +1,15 @@
+instance_id: jarvis
+codex:
+  mode: app_server
+  executable: /usr/local/bin/codex
+  cwd: /root/jarvis_workdir
+state_dir: /var/lib/bridges/state
+download_dir: /root/jarvis_workdir/downloads
+telegram:
+  bots:
+    jarvis:
+      token_env: TELEGRAM_BOT_TOKEN
+  connections:
+    personal:
+      bot: jarvis
+      chat_id: "REPLACE_WITH_PRIVATE_CHAT_ID"

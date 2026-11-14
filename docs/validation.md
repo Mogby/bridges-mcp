@@ -66,11 +66,28 @@ Tokens, private chat identifiers, test artifacts, and downloaded files remain
 excluded from version control. The current envelope uses a fenced YAML metadata
 header, with no `---` separator, as requested after the initial smoke test.
 
+## Live App Server VPS acceptance
+
+On 2026-11-14, a subscription-backed Ubuntu 24.04 deployment using Codex 0.169.0
+received a real Telegram message, started the bound session, and successfully
+called both protocol documentation and Telegram send tools with host-attributed
+MCP metadata. The Telegram API acknowledged the model-originated reply.
+
+Separate model-backed smoke tests using the service CODEX_HOME and workspace
+verified shell writes, native web search, and native image generation with a PNG
+saved to disk. An explicitly escalated read-only command completed with automatic
+approval review. App Server config and thread responses independently confirmed
+the working directory, reviewer, approval policy, and workspace-write sandbox.
+Systemd restart shut down cleanly and resumed the same bound thread. Three
+subsequent inbound messages each produced a successful model-originated Telegram
+send through MCP, verifying that the renewed endpoint works after resume.
+See the [deployment guide](../deploy/systemd/README.md) for configuration and paths.
+
 ## Remaining acceptance boundaries
 
-- Full subscription-backed App Server model execution, live Telegram steering and
-  idle wake-up, restart/resume, and real model-originated MCP callbacks still need
-  an integrated acceptance run. The fake-process tests do not establish these.
+- Live Telegram steering during an active model turn still needs an explicit
+  integrated acceptance check. Idle wake-up, model execution, MCP callbacks,
+  and replies after restart have passed the live deployment checks above.
 - Pending approvals/input are preserved, but there is no operator UI for resolving
   them. Incoming messages must never answer or approve these requests implicitly.
 - Completion/failure/interruption typing cancellation is covered by deterministic

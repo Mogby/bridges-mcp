@@ -16,10 +16,10 @@ not attach to a chat in the Codex desktop app or run as a desktop stdio MCP serv
 ## Status
 
 App Server is the only supported transport. The runner is still **experimental**:
-full subscription-backed model execution, MCP callbacks, and interactive
-approval/input handling need an integrated acceptance run. It preserves pending
-approval/input requests without answering them and currently has no operator UI
-for resolving them. Existing Codex approval and sandbox policy remains in force.
+a live VPS deployment has verified subscription-backed model execution, MCP
+callbacks, Telegram replies, native web search and image generation, and automatic
+approval review. Human approval/input requests are preserved without an operator
+UI for resolving them. Existing Codex approval and sandbox policy remains in force.
 
 Automated tests cover startup, authenticated loopback MCP access, restart/resume,
 child shutdown, delivery decisions, and typing lifecycle. See
@@ -38,6 +38,9 @@ python3 -m venv .venv
 
 The installed entry point is `.venv/bin/bridges`. For a regular installation,
 `pip install .` also works.
+
+For an always-on VPS with a separate agent workspace, see the
+[systemd deployment guide](deploy/systemd/README.md).
 
 ## Create and configure a Telegram bot
 

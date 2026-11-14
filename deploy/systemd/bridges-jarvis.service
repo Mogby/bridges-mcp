@@ -1,0 +1,23 @@
+[Unit]
+Description=Jarvis Telegram bridge with Codex App Server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/jarvis_workdir
+Environment=CODEX_HOME=/var/lib/bridges/codex
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+LoadCredential=telegram-token:/etc/bridges/telegram-token
+ExecStart=/opt/bridges-mcp/deploy/systemd/run-jarvis
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
