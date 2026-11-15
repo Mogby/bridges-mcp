@@ -5,12 +5,14 @@ import logging
 import mimetypes
 import secrets
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 from PIL import Image, UnidentifiedImageError
 
+from .admin import COMMANDS, command_from
 from .envelope import normalize
 from .errors import BridgeError
 
@@ -150,6 +152,7 @@ class TelegramBridge:
         )
         self.sleep = sleep
         self.tasks = []
+        self.usernames = {}
 
     def connection(self, name=None):
         connections = self.config.telegram.connections
@@ -168,6 +171,34 @@ class TelegramBridge:
         if not self.tasks:
             self.tasks = [asyncio.create_task(self.poll(bot)) for bot in self.clients]
 
+    async def register_admin_commands(self, bot):
+        api = self.clients[bot]
+        identity = await api.call("getMe")
+        self.usernames[bot] = identity["username"]
+        await api.call("setMyCommands", {"commands": COMMANDS})
+        # Telegram scopes and private-chat menu buttons belong to the chat,
+        # not an individual forum topic. Configure each permitted chat once.
+        chats = {
+            connection.chat_id
+            for connection in self.config.telegram.connections.values()
+            if connection.bot == bot and connection.allow_admin
+        }
+        for chat_id in sorted(chats):
+            try:
+                await api.call(
+                    "setMyCommands",
+                    {"commands": COMMANDS, "scope": {"type": "chat", "chat_id": chat_id}},
+                )
+                chat = await api.call("getChat", {"chat_id": chat_id})
+                if chat.get("type") == "private":
+                    await api.call(
+                        "setChatMenuButton",
+                        {"chat_id": chat_id, "menu_button": {"type": "commands"}},
+                    )
+            except BridgeError as exc:
+                # One inaccessible chat must not prevent polling every connection.
+                log.warning("telegram_admin_menu_failed code=%s", exc.code)
+
     async def poll(self, bot):
         api, offset, seen = self.clients[bot], None, OrderedDict()
         checked = False
@@ -182,6 +213,8 @@ class TelegramBridge:
                             "Remove the configured webhook explicitly before starting polling.",
                         )
                     checked = True
+                    if self.config.telegram.bots[bot].admin:
+                        await self.register_admin_commands(bot)
                 updates = await api.call(
                     "getUpdates", {"offset": offset, "timeout": 25, "allowed_updates": ["message"]}
                 )
@@ -200,6 +233,10 @@ class TelegramBridge:
                             update, bot, self.config.telegram.connections, self.handles
                         )
                         if envelope:
+                            envelope = replace(
+                                envelope,
+                                command=command_from(update["message"], self.usernames.get(bot)),
+                            )
                             self.enqueue(envelope)
                     except (KeyError, TypeError, ValueError):
                         log.warning("telegram_update_dropped reason=invalid_payload")

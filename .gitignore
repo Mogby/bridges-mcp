@@ -9,3 +9,6 @@ dist/
 .runtime/
 bot_token
 vps_bot_token
+
+# Local internal architecture notes
+/DESIGN.md

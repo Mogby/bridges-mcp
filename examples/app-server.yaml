@@ -3,15 +3,23 @@ http:
   port: 8765
 clients:
   assistant:
+    adapter: codex-app-server
     token_env: ASSISTANT_MCP_TOKEN
-    socket_path: /run/assistant/codex.sock
+    socket_path: /run/assistant/harness.sock
+sessions:
+  personal:
+    client: assistant
+    cwd: /srv/assistant
 telegram:
   bots:
     main:
       token_env: TELEGRAM_BOT_TOKEN
+      admin: false
   connections:
     personal:
       bot: main
       chat_id: "123456789"
+      session_id: personal
+      allow_admin: false
 state_dir: /var/lib/bridges-mcp
 download_dir: /srv/assistant/downloads

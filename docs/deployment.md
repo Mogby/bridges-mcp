@@ -1,70 +1,58 @@
-# Independent server and application deployment
+# Configuration and upgrades
 
-Run Bridges as one long-lived HTTP service. Run each application as its own
-service; an application launches Codex and decides whether to start or resume
-conversations. Application code, credentials, configuration, and instructions
-live outside the Bridges repository.
+Bridges connects to independently provided harness endpoints. Backend installation,
+process supervision, login, native tools, and sandbox/approval policy belong to the
+chosen harness and deployment environment. They are outside Bridges's scope.
 
-## Bridges service
+## Clients, sessions, and connections
 
-The service runs `bridges serve --config /absolute/path/config.yaml` with bot
-and application bearer-token environment variables. See
-[the configuration example](../examples/app-server.yaml). Protect credentials
-using your supervisor's secret facility, such as systemd `LoadCredential`.
+`clients` configure adapters and authenticated MCP access. The bundled
+`codex-app-server` adapter uses a protected local Unix WebSocket. Restrict socket
+access through filesystem permissions and supply the same MCP bearer token to the
+harness and Bridges using environment variables. No harness process is launched by
+Bridges.
 
-Use a stable loopback port, a persistent `state_dir`, and application-accessible
-download directories. One Bridges process can serve several applications. Give
-each a distinct client ID, random bearer token, and App Server Unix socket path.
-The server can start with all applications offline. Restarting it preserves focus
-and does not restart applications. Configure supervisors independently; a Bridges
-stop must not cascade into stopping application services.
+`sessions` define stable logical groups with `client`, absolute `cwd`, and optional
+`model`/`effort` defaults. Every connection references a configured `session_id`.
+Multiple connections may share one session; history and settings are shared, while
+transport settings and admin permissions remain per connection.
 
-## Application service
+`<state_dir>/<instance_id>/sessions.json` stores the group's nullable backend pointer
+and saved overrides. A logical ID is independent of any harness-native session or
+conversation ID. Runtime changes override configured defaults until cleared.
 
-The application runs its Codex App Server with a protected local socket, for example:
+Startup makes no conversations and sends no initialization prompts. Connections
+are resolved on demand. Temporary failures preserve pointers. An uncertain creation
+marker blocks automatic retry until the user checks state and explicitly requests
+a new conversation.
 
-```sh
-codex app-server --listen unix:///run/my-assistant/codex.sock
+## Adapter boundary
+
+Adapters implement the `Backend` contract in `transports/base.py` and are registered
+in `transports/__init__.py`. They normalize creation responses and `ModelInfo` catalogs,
+classify confirmed missing conversations, and expose `Transport` lifecycle/delivery.
+Harness-specific RPC methods, errors, and response shapes belong in the adapter.
+The session manager does not interpret native protocol fields.
+
+## Upgrading from 0.3.x
+
+Back up configuration and routing state. Add logical sessions and each connection's
+`session_id`. While stopped, import existing conversation pointers into:
+
+```json
+{"instance_id":"main","sessions":{"personal":{"thread_id":"existing-conversation-id","model":"model-id","effort":"medium"}}}
 ```
 
-The owning application connects using WebSockets over that socket, initializes,
-and calls `thread/start` or `thread/resume`. It keeps its controlling connection
-open. Bridges uses a separate connection for observations and input delivery.
-A private runtime directory should protect the socket.
+Connections grouped together must agree on backend and initial conversation. Import
+existing desired settings rather than resetting them. A null pointer deliberately
+requests automatic creation on the next incoming message.
 
-In the application's own `CODEX_HOME/config.toml`, configure:
+The separate application-control endpoint and agent-controlled focus API are removed.
+Remove `control_socket_path` from client configuration and obsolete focus instructions
+from workspace guidance. Preserve conversation history and credentials when changing
+backend deployment. Bridges refuses to start with only legacy `focus.json` state and
+no migrated `sessions.json`; it does not silently discard an existing pointer.
 
-```toml
-[mcp_servers.bridges]
-url = "http://127.0.0.1:8765/mcp"
-bearer_token_env_var = "ASSISTANT_MCP_TOKEN"
-```
-
-Supply the matching token to the application's environment. Model, reasoning,
-approval, sandbox, and native-tool configuration also belongs in this Codex home.
-The application owns conversation persistence and applying model overrides on
-resume. Its normal startup turn can read its AGENTS.md. Bridges does not inject
-startup prompts or instructions to select connections.
-
-The model calls `bridges.focus(connection_id)` when application/user instructions
-request it. A fresh session replaces the previous target for that connection.
-An application restarting into the same loaded session can use existing focus.
-If it creates a new session, the old mapping stays unavailable until explicitly
-replaced. Incoming messages during unavailability are dropped; no inbox is stored.
-
-## Migrating from the combined runner
-
-The previous `codex:` config, bridge-owned `binding.json`, and `reset-binding`
-command are removed. Stop the old combined runner before starting the separate
-services, so there is only one Telegram poller.
-
-Move the existing Codex home and chosen conversation ID into the owning
-application's configuration/state. Keep workspace files and instructions. Codex
-records can contain absolute paths: preserve access to old paths if relocating
-existing conversation files. Preserve login credentials only on their existing
-host, with restricted permissions.
-
-Start the application and use an explicit focus call to select its session.
-Bridges stores targets in `<state_dir>/<instance_id>/focus.json`. Stop the server
-before using `reset-focus` to clear all assignments. This command does not alter
-application history or restart/create any conversation.
+After verification, archive obsolete state. To deliberately clear shared pointers
+while stopped, use `bridges reset-sessions --config ...`. This does not delete backend
+conversation history. There is no `reset-focus` command.

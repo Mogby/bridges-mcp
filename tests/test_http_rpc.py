@@ -47,9 +47,8 @@ async def test_http_auth_focus_and_host_identity(runtime):
         listed = (await client.post("/mcp", json=message, headers=headers)).json()["result"][
             "tools"
         ]
-        assert len(listed) == 8
-        focus = next(t for t in listed if t["name"] == "focus")
-        assert focus["inputSchema"]["required"] == ["connection_id"]
+        assert len(listed) == 6
+        assert "focus" not in {tool["name"] for tool in listed}
 
         async def call(name, args, meta):
             response = await client.post(
@@ -65,21 +64,18 @@ async def test_http_auth_focus_and_host_identity(runtime):
             return response.json()["result"]
 
         result = await call(
-            "focus", {"connection_id": "one"}, {"threadId": "chat", "client_id": "attacker"}
+            "telegram_send_text",
+            {"connection_id": "one", "text": "hi"},
+            {"threadId": "chat", "client_id": "attacker"},
         )
-        assert not result["isError"] and result["structuredContent"]["client_id"] == "app"
-        assert (await call("focus", {"connection_id": "one"}, {}))["isError"]
-        assert (await call("focus", {"connection_id": "one"}, {"threadId": "unloaded"}))["isError"]
-        assert (await call("focus", {}, {"threadId": "chat"}))["isError"]
-        assert (
-            await call(
-                "focus", {"connection_id": "one", "thread_id": "other"}, {"threadId": "chat"}
-            )
-        )["isError"]
-        docs = await call("get_protocol_docs", {}, {"threadId": "other"})
-        assert docs["structuredContent"]["focus"]["one"]["thread_id"] == "chat"
-        assert "focus(" not in docs["structuredContent"]["instructions"]
-        assert "focus(" not in create_server(runtime).instructions
+        assert not result["isError"]
+        assert (await call("telegram_send_text", {"connection_id": "one", "text": "hi"}, {}))[
+            "isError"
+        ]
+        assert (await call("focus", {"connection_id": "one"}, {"threadId": "chat"}))["isError"]
+        docs = await call("get_protocol_docs", {}, {"threadId": "chat"})
+        assert docs["structuredContent"]["sessions"]["shared"]["thread_id"] == "chat"
+        assert "focus" not in docs["structuredContent"]["tools"]
 
 
 async def test_websocket_rpc_multiplexing_and_disconnect(socket_path):
@@ -119,7 +115,8 @@ async def test_completed_turn_not_resurrected_by_start_ack():
         return {"turn": {"id": "fast", "status": "inProgress"}}
 
     transport.backend.rpc.request.side_effect = request
-    assert (await transport.deliver("hello")).outcome == "accepted"
+    delivered = await transport.deliver("hello")
+    assert delivered.outcome == "accepted" and delivered.turn_id == "fast"
     assert transport.state == TurnState("idle")
 
 

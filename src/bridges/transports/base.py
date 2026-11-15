@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,7 @@ class TurnState:
 class Delivery:
     outcome: Literal["accepted", "rejected", "unknown"]
     code: str
+    turn_id: str | None = None
 
 
 class Transport:
@@ -32,3 +33,22 @@ class Transport:
         if state.status != "active" or not state.turn_id or (claimed and state.turn_id != claimed):
             return None
         return state.turn_id
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    id: str
+    aliases: tuple[str, ...] = ()
+    efforts: tuple[str, ...] = ()
+    default_effort: str | None = None
+
+
+class Backend(Protocol):
+    """Harness adapter contract; response shapes are normalized by adapters."""
+
+    async def connect(self): ...
+    async def create(self, cwd: str, options: dict) -> dict: ...
+    async def load(self, thread_id: str, cwd: str, options: dict) -> Transport: ...
+    async def session(self, thread_id: str) -> Transport: ...
+    async def models(self) -> list[ModelInfo]: ...
+    async def close(self): ...

@@ -191,11 +191,11 @@ async def discover_telegram(config, bot=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Shared HTTP MCP server with persistent per-connection session focus."
+        description="Shared HTTP MCP server with shared logical sessions."
     )
     parser.add_argument(
         "command",
-        choices=["serve", "validate", "reset-focus", "discover-telegram"],
+        choices=["serve", "validate", "reset-sessions", "discover-telegram"],
         nargs="?",
         default="serve",
     )
@@ -213,14 +213,14 @@ def main():
         config = load_config(args.config)
         if args.command == "discover-telegram":
             asyncio.run(discover_telegram(config, args.bot))
-        elif args.command == "reset-focus":
+        elif args.command == "reset-sessions":
             state = InstanceState(config.state_path, config.instance_id)
             state.acquire()
             try:
-                state.save_focus({})
+                state.save_sessions({})
             finally:
                 state.close()
-            print("Connection focus cleared. Application sessions are unchanged.")
+            print("Shared session pointers cleared. Conversation history is unchanged.")
         elif args.command == "validate":
             config.tokens()
             config.client_tokens()

@@ -1,4 +1,4 @@
-"""Observe and deliver to application-owned sessions; never launch or resume them."""
+"""Codex daemon client: create, resume, observe, and deliver shared sessions."""
 
 import asyncio
 import logging
@@ -7,7 +7,7 @@ from websockets.asyncio.client import unix_connect
 from websockets.exceptions import WebSocketException
 
 from ..errors import BridgeError
-from .base import Delivery, Transport, TurnState
+from .base import Delivery, ModelInfo, Transport, TurnState
 from .rpc import MAX_FRAME, RPC, RPCRejected
 
 log = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class AppServer:
             rpc = RPC(socket, on_event=self.event, on_disconnect=self.disconnected)
             try:
                 await rpc.request(
-                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.2.0"}}
+                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.4.1"}}
                 )
                 await rpc.send({"method": "initialized"})
             except BaseException:
@@ -58,10 +58,92 @@ class AppServer:
             if state.status not in {"idle", "active"}:
                 raise BridgeError(
                     "session_unavailable",
-                    "The application must load the calling session in its App Server.",
+                    "The calling session is not loaded in the Codex daemon.",
                 )
             self.sessions[thread_id] = session
             return session
+
+    @staticmethod
+    def thread_params(cwd, options):
+        params = {"cwd": cwd}
+        if options.get("model"):
+            params["model"] = options["model"]
+        if options.get("effort"):
+            params["config"] = {"model_reasoning_effort": options["effort"]}
+        return params
+
+    async def create(self, cwd, options):
+        await self.connect()
+        response = await self.rpc.request("thread/start", self.thread_params(cwd, options))
+        thread_id = response["thread"]["id"]
+        session = AppServerSession(self, thread_id)
+        session.settings = {"model": response["model"]}
+        if response.get("reasoningEffort"):
+            session.settings["effort"] = response["reasoningEffort"]
+        session.update(TurnState("idle"))
+        self.sessions[thread_id] = session
+        return {"thread_id": thread_id, **session.settings}
+
+    async def load(self, thread_id, cwd, options):
+        await self.connect()
+        session = self.sessions.get(thread_id)
+        if session is not None:
+            state = await session.snapshot()
+            if state.status in {"active", "idle"}:
+                return session
+        try:
+            response = await self.rpc.request(
+                "thread/resume",
+                {
+                    **self.thread_params(cwd, options),
+                    "threadId": thread_id,
+                    "excludeTurns": True,
+                },
+            )
+        except RPCRejected as exc:
+            error = exc.response.get("error", {})
+            # Only confirmed absence permits replacement. Permission, provider,
+            # malformed-ID, storage, and transport failures preserve the pointer.
+            if error.get("code") == -32600 and error.get("message") in {
+                f"no rollout found for thread id {thread_id}",
+                f"no rollout found for conversation id {thread_id}",
+            }:
+                raise BridgeError(
+                    "thread_missing", "The saved Codex thread no longer exists."
+                ) from None
+            raise
+        if response["thread"]["id"] != thread_id:
+            raise BridgeError("invalid_payload", "Codex returned a different thread identity.")
+        session = session or AppServerSession(self, thread_id)
+        session.settings = {"model": response["model"]}
+        if response.get("reasoningEffort"):
+            session.settings["effort"] = response["reasoningEffort"]
+        self.sessions[thread_id] = session
+        # Register before reading lifecycle so asynchronous events cannot be lost.
+        await session.snapshot()
+        return session
+
+    async def models(self):
+        await self.connect()
+        models, cursor = [], None
+        for _ in range(100):
+            result = await self.rpc.request("model/list", {"cursor": cursor, "limit": 100})
+            models.extend(
+                ModelInfo(
+                    id=model["model"],
+                    aliases=(model["id"],),
+                    efforts=tuple(
+                        item["reasoningEffort"] for item in model["supportedReasoningEfforts"]
+                    ),
+                    default_effort=model["defaultReasoningEffort"],
+                )
+                for model in result["data"]
+                if not model.get("hidden")
+            )
+            cursor = result.get("nextCursor")
+            if not cursor:
+                return models
+        raise BridgeError("invalid_payload", "Codex model catalog pagination exceeded its limit.")
 
     def disconnected(self):
         for session in self.sessions.values():
@@ -73,8 +155,7 @@ class AppServer:
             session.event(message)
 
     async def observe(self):
-        # thread/read does not subscribe. Poll lifecycle without thread/resume:
-        # only the owning application is allowed to load or resume conversations.
+        # Resume subscribes; polling also reconciles missed lifecycle events.
         while True:
             await asyncio.sleep(1)
             await asyncio.gather(*(session.snapshot() for session in list(self.sessions.values())))
@@ -166,7 +247,7 @@ class AppServerSession(Transport):
                 self.disconnected()
             return self.state
 
-    async def deliver(self, text):
+    async def deliver(self, text, options=None):
         async with self.delivery_lock:
             for attempt in range(2):
                 state = await self.snapshot()
@@ -184,12 +265,17 @@ class AppServerSession(Transport):
                     params["expectedTurnId"] = state.turn_id
                 revision = self.event_revision
                 try:
+                    if method == "turn/start":
+                        params.update(options or {})
                     result = await self.rpc.request(method, params)
                     if method == "turn/start" and revision == self.event_revision:
                         turn = result["turn"]
                         if turn.get("status", "inProgress") == "inProgress":
                             self.update(TurnState("active", turn["id"]))
-                    return Delivery("accepted", "steered" if method == "turn/steer" else "started")
+                    turn_id = result["turn"]["id"] if method == "turn/start" else state.turn_id
+                    return Delivery(
+                        "accepted", "steered" if method == "turn/steer" else "started", turn_id
+                    )
                 except RPCRejected as exc:
                     error = exc.response.get("error", {})
                     message = error.get("message", "") if isinstance(error, dict) else ""

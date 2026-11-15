@@ -1,3 +1,3 @@
-"""Bridges MCP: one application, one Codex chat, multiple connections."""
+"""Bridges MCP: shared agent sessions and per-connection Telegram routing."""
 
-__version__ = "0.1.0"
+__version__ = "0.4.1"

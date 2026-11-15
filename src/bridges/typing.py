@@ -1,8 +1,11 @@
+"""Best-effort typing owned by accepted inbound turns, never by agent tools."""
+
 import asyncio
 import logging
 from dataclasses import dataclass
 
 from .errors import BridgeError
+from .transports.base import TurnState
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +20,6 @@ class TypingManager:
     def __init__(self, transport, send, sleep=asyncio.sleep):
         self.transport, self.send, self.sleep = transport, send, sleep
         self.owners = {}
-        self.lock = asyncio.Lock()
         transport.listeners.append(self.observe)
 
     def observe(self, state):
@@ -27,51 +29,38 @@ class TypingManager:
                 if owner.task:
                     owner.task.cancel()
 
-    async def set(self, connection, enabled, claimed_turn=None):
-        async with self.lock:
-            if not enabled:
-                await self.stop(connection)
-                return {"enabled": False}
-            turn = await self.transport.verify_turn(claimed_turn)
-            if not turn:
-                raise BridgeError(
-                    "capability_unavailable",
-                    "Cannot verify and observe the calling active turn; typing was not started.",
-                )
-            owner = self.owners.get(connection)
-            if owner and owner.turn_id == turn:
-                return {"enabled": True, "turn_id": turn}
-            await self.stop(connection)
-            owner = Owner(turn)
-            self.owners[connection] = owner
-            try:
-                await self.send(connection)
-            except BaseException:
-                if self.owners.get(connection) is owner:
-                    self.owners.pop(connection)
-                raise
-            if self.owners.get(connection) is not owner:
-                raise BridgeError(
-                    "capability_unavailable",
-                    "The owning turn ended while typing was being enabled.",
-                )
-            owner.task = asyncio.create_task(self.refresh(connection, owner))
-            return {"enabled": True, "turn_id": turn}
+    async def start(self, connection, turn_id):
+        # The delivery acknowledgement identifies the accepted turn. Do not bind
+        # a late acknowledgement to a replacement turn, or resurrect a fast one.
+        if not turn_id or self.transport.state != TurnState("active", turn_id):
+            return
+        owner = self.owners.get(connection)
+        if owner and owner.turn_id == turn_id:
+            return
+        await self.stop(connection)
+        if self.transport.state != TurnState("active", turn_id):
+            return
+        owner = Owner(turn_id)
+        self.owners[connection] = owner
+        # Sending typing must not block delivery, session replacements or other chats.
+        owner.task = asyncio.create_task(self.refresh(connection, owner))
 
     async def refresh(self, connection, owner):
-        delay = 4
         try:
-            while True:
-                await self.sleep(delay)
-                turn = await self.transport.verify_turn(owner.turn_id)
-                if turn != owner.turn_id or self.owners.get(connection) is not owner:
+            while self.owners.get(connection) is owner:
+                if self.transport.state != TurnState("active", owner.turn_id):
                     return
+                delay = 4
                 try:
                     await self.send(connection)
-                    delay = 4
                 except BridgeError as exc:
                     log.warning("typing_refresh_failed code=%s", exc.code)
                     delay = max(4, min(60, exc.details.get("retry_after", 4)))
+                except Exception:  # noqa: BLE001 - typing must never fail delivery
+                    log.warning("typing_refresh_failed code=operation_failed")
+                await self.sleep(delay)
+                if await self.transport.verify_turn(owner.turn_id) != owner.turn_id:
+                    return
         finally:
             if self.owners.get(connection) is owner:
                 self.owners.pop(connection)
@@ -83,6 +72,7 @@ class TypingManager:
             await asyncio.gather(owner.task, return_exceptions=True)
 
     async def close(self):
-        self.transport.listeners.remove(self.observe)
+        if self.observe in self.transport.listeners:
+            self.transport.listeners.remove(self.observe)
         for connection in list(self.owners):
             await self.stop(connection)

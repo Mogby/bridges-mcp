@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 from conftest import FakeTransport
 
-from bridges.errors import BridgeError
+from bridges.envelope import Inbound
 from bridges.transports.app_server import AppServerSession
 from bridges.transports.base import TurnState
 from bridges.transports.rpc import RPCRejected
@@ -34,21 +34,23 @@ class Clock:
 async def test_typing_idempotence_two_connections_completion_and_disconnect():
     transport, send, clock = FakeTransport(), AsyncMock(), Clock()
     manager = TypingManager(transport, send, clock.sleep)
-    await manager.set("one", True)
-    await manager.set("one", True)
-    await manager.set("two", True)
+    await manager.start("one", "turn-1")
+    await manager.start("one", "turn-1")
+    await manager.start("two", transport.state.turn_id)
+    await asyncio.sleep(0)
     assert send.await_count == 2
     await clock.tick()
     await clock.tick()
     assert send.await_count == 6
-    await manager.set("one", False)
-    await manager.set("one", False)
+    await manager.stop("one")
+    await manager.stop("one")
     await clock.tick()
     assert send.await_count == 7
     transport.update(TurnState("active", "turn-2"))
     await clock.tick()
     assert not manager.owners and send.await_count == 7
-    await manager.set("two", True)
+    await manager.start("two", transport.state.turn_id)
+    await asyncio.sleep(0)
     transport.update(TurnState("disconnected"))
     await clock.tick()
     assert not manager.owners and send.await_count == 8
@@ -60,8 +62,9 @@ async def test_typing_requires_observable_active_turn(state):
     transport, send = FakeTransport(), AsyncMock()
     transport.update(state)
     manager = TypingManager(transport, send)
-    with pytest.raises(BridgeError):
-        await manager.set("one", True)
+    await manager.start("one", "turn-1")
+    await asyncio.sleep(0)
+    assert not manager.owners
     send.assert_not_called()
     await manager.close()
 
@@ -81,10 +84,10 @@ async def test_typing_cancellation_waits_for_inflight_refresh():
                 cancelled.set()
 
     manager = TypingManager(transport, send, clock.sleep)
-    await manager.set("one", True)
+    await manager.start("one", "turn-1")
     await clock.tick()
     await entered.wait()
-    await manager.set("one", False)
+    await manager.stop("one")
     assert cancelled.is_set()
     await clock.tick()
     assert len(calls) == 2
@@ -93,14 +96,8 @@ async def test_typing_cancellation_waits_for_inflight_refresh():
 
 async def test_outbound_send_does_not_stop_typing(runtime):
     await runtime.start()
-    await runtime.call("focus", {"connection_id": "one"}, {"threadId": "chat"}, "app")
-    enabled = await runtime.call(
-        "telegram_set_typing",
-        {"connection_id": "one", "enabled": True},
-        {"threadId": "chat", "turnId": "turn-1"},
-        "app",
-    )
-    assert not enabled.isError
+    runtime.enqueue(Inbound("one", "hello"))
+    await runtime.queue.join()
     await runtime.call(
         "telegram_send_text", {"connection_id": "one", "text": "done"}, {"threadId": "chat"}, "app"
     )
@@ -109,12 +106,13 @@ async def test_outbound_send_does_not_stop_typing(runtime):
     assert not runtime.typing[("app", "chat")].owners
 
 
-async def test_stale_completion_cannot_stop_new_turn_typing(config):
+@pytest.mark.parametrize("status", ["completed", "failed", "interrupted"])
+async def test_stale_completion_cannot_stop_new_turn_typing(config, status):
     transport = AppServerSession(AsyncMock(), "chat")
     transport.snapshot = AsyncMock(side_effect=lambda: transport.state)
     transport.update(TurnState("active", "new"))
     manager = TypingManager(transport, AsyncMock())
-    await manager.set("one", True)
+    await manager.start("one", "new")
     transport.event(
         {
             "method": "turn/completed",
@@ -125,7 +123,7 @@ async def test_stale_completion_cannot_stop_new_turn_typing(config):
     transport.event(
         {
             "method": "turn/completed",
-            "params": {"threadId": "chat", "turn": {"id": "new", "status": "interrupted"}},
+            "params": {"threadId": "chat", "turn": {"id": "new", "status": status}},
         }
     )
     assert not manager.owners
@@ -141,7 +139,7 @@ async def test_app_server_active_idle_and_known_race(config):
         {"turn": {"id": "new"}},
     ]
     delivered = await transport.deliver("body")
-    assert delivered.outcome == "accepted"
+    assert delivered.outcome == "accepted" and delivered.turn_id == "new"
     assert [call.args[0] for call in transport.rpc.request.call_args_list] == [
         "turn/steer",
         "turn/start",
@@ -192,3 +190,24 @@ async def test_approval_and_input_requests_preserve_active_state(config):
     assert transport.state == TurnState("active", "turn")
     assert len(transport.pending_requests) == 2
     transport.rpc.send.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": -32600, "message": "permission denied: file not found"},
+        {"code": -32600, "message": "invalid thread id"},
+        {"code": -32600, "message": "provider mismatch", "data": {"type": "modelProviderMismatch"}},
+        {"code": -32603, "message": "no rollout found for thread id target"},
+    ],
+)
+async def test_resume_does_not_misclassify_other_errors_as_deleted(error):
+    from bridges.config import Client
+    from bridges.transports.app_server import AppServer
+
+    backend = AppServer(Client(token_env="TOKEN", socket_path="/tmp/test.sock"))
+    backend.connect = AsyncMock()
+    backend.rpc = AsyncMock()
+    backend.rpc.request.side_effect = RPCRejected({"error": error})
+    with pytest.raises(RPCRejected):
+        await backend.load("target", "/tmp", {})

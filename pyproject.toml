@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridges-mcp"
-version = "0.2.0"
-description = "Shared Telegram MCP server with persistent per-connection session focus"
+version = "0.4.1"
+description = "Messaging MCP server with shared sessions and harness adapters"
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"

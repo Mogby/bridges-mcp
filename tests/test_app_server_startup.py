@@ -14,33 +14,30 @@ def test_application_launch_settings_rejected():
         Config.model_validate({"instance_id": "test", "codex": {"executable": "codex"}})
 
 
-async def test_bridges_starts_without_application(runtime):
+async def test_bridges_starts_without_daemon(runtime):
     backend = runtime.backends["app"]
-    backend.session = AsyncMock(side_effect=BridgeError("session_unavailable", "offline"))
+    backend.load = AsyncMock(side_effect=BridgeError("session_unavailable", "offline"))
     await runtime.start()
     assert runtime.ready and runtime.telegram.tasks
-    backend.session.assert_not_called()
-    assert runtime.store.read_focus() == {}
-    assert not (runtime.store.directory / "binding.json").exists()
-    result = await runtime.call("focus", {"connection_id": "one"}, {"threadId": "chat"}, "app")
-    assert result.isError and runtime.store.read_focus() == {}
+    backend.load.assert_not_called()
+    assert runtime.store.read_sessions()["shared"]["thread_id"] == "chat"
 
 
 @pytest.mark.parametrize(
-    "connections",
+    "sessions",
     [
-        {"one": ["a", "b"]},
-        {"one": {"client_id": "app"}},
-        {"one": {"client_id": "", "thread_id": "x"}},
+        {"shared": ["a", "b"]},
+        {"shared": {"model": "test"}},
+        {"shared": {"thread_id": ""}},
     ],
 )
-def test_invalid_focus_rejected(tmp_path, connections):
+def test_invalid_session_state_rejected(tmp_path, sessions):
     state = InstanceState(tmp_path, "test")
     state.acquire()
     try:
-        state.focus_path.write_text(json.dumps({"instance_id": "test", "connections": connections}))
+        state.sessions_path.write_text(json.dumps({"instance_id": "test", "sessions": sessions}))
         with pytest.raises(BridgeError):
-            state.read_focus()
+            state.read_sessions()
     finally:
         state.close()
 

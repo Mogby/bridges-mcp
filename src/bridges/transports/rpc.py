@@ -6,12 +6,12 @@ import uuid
 
 from websockets.exceptions import ConnectionClosed
 
-from ..errors import BridgeError
+from ..errors import BridgeError, OperationRejected
 
 MAX_FRAME = 16 * 1024 * 1024
 
 
-class RPCRejected(BridgeError):
+class RPCRejected(OperationRejected):
     def __init__(self, response):
         super().__init__("codex_rejected", "Codex explicitly rejected the request.")
         self.response = response

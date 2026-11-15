@@ -1,171 +1,132 @@
 # Bridges MCP
 
-Bridges is a shared HTTP MCP server for Telegram messaging and incoming-message
-routing. It owns Telegram listeners and a persistent **connection → session**
-focus map. Your application owns Codex, its model configuration, conversation
-history, and the decision to create or resume a session.
+Bridges is a shared MCP server that routes messaging connections into logical
+agent sessions. Connections can share a session, conversation history, and settings.
+Replies use explicit destinations and are never automatically broadcast.
 
-Bridges does not launch Codex or create/resume chats. It connects to an existing
-Codex App Server over a configured local Unix WebSocket, and serves MCP tools over
-authenticated loopback HTTP. Codex App Server is the supported delivery backend;
-other harnesses need their own delivery adapter before incoming routing works.
+Session routing, persistence, admin commands, and messaging tools are independent
+of the agent harness. Harness adapters implement conversation creation/loading,
+input delivery, model catalogs, and turn lifecycle. The bundled adapter supports
+Codex App Server over a protected local Unix WebSocket. Other harnesses need an
+adapter implementing the same interface.
 
 ## Install
 
-Requires Python 3.11+ on Linux or macOS. Windows is not currently supported.
+Requires Python 3.11+ on Linux or macOS.
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
-See [deployment configuration](docs/deployment.md) for the service boundary and
-application connection setup. Application-specific launchers and credentials
-belong outside this repository.
+See [configuration](docs/deployment.md), [the example](examples/app-server.yaml),
+[admin commands](docs/admin.md), and [validation](docs/validation.md).
 
-## Configure the server
+## Configure
 
-Copy [examples/app-server.yaml](examples/app-server.yaml) to a private location.
-Configure:
+Give each backend a `clients` entry with an adapter, socket path, and `token_env`
+naming a unique MCP bearer token of at least 32 characters. Keep credentials in
+environment variables, never YAML or command arguments. MCP binds to loopback.
 
-- A stable `http.port` (default 8765; binds only to `127.0.0.1`).
-- One `clients` entry per application, with its App Server `socket_path` and a
-  `token_env` naming a unique random bearer token of at least 32 characters.
-- Telegram bot token environment variables and connection routes. Use quoted
-  chat IDs, and optional positive `message_thread_id` values for forum topics.
-- A persistent `state_dir` and a download directory accessible to the application.
+Define logical `sessions`, each selecting a client, absolute workspace `cwd`, and
+optional `model`/`effort` defaults. Every messaging connection references a stable
+`session_id`. Multiple connections can reference the same logical session.
 
-Generate and provision credentials outside source control. Never put bot tokens
-or MCP bearer tokens in YAML, command-line arguments, protocol docs, or logs.
-Applications receive only their MCP bearer token; the Telegram token stays with
-Bridges. Each application's bearer token selects its configured delivery backend.
-
-Create a bot with Telegram's [BotFather](https://t.me/BotFather), send it `/start`,
-and discover your chat ID before starting the listener:
+```yaml
+clients:
+  assistant:
+    adapter: codex-app-server
+    token_env: ASSISTANT_MCP_TOKEN
+    socket_path: /run/assistant/harness.sock
+sessions:
+  personal:
+    client: assistant
+    cwd: /srv/assistant
+telegram:
+  bots:
+    main:
+      token_env: TELEGRAM_BOT_TOKEN
+      admin: true
+  connections:
+    personal_telegram:
+      bot: main
+      chat_id: "123456789"
+      session_id: personal
+      allow_admin: true
+```
 
 ```sh
-.venv/bin/bridges discover-telegram --config /absolute/path/config.yaml --bot main
-.venv/bin/bridges validate --config /absolute/path/config.yaml
-.venv/bin/bridges serve --config /absolute/path/config.yaml
+bridges discover-telegram --config /absolute/path/config.yaml --bot main
+bridges validate --config /absolute/path/config.yaml
+bridges serve --config /absolute/path/config.yaml
 ```
 
-Discovery requires the bot token environment variable. Serving and validation
-also require application bearer tokens. A webhook or competing bot poller is an
-explicit conflict; Bridges never removes webhooks automatically. Group visibility
-still depends on Telegram bot privacy settings and permissions.
+One process polls each configured bot. Process locks prevent duplicate listeners
+sharing a state directory. Bridges never removes webhooks automatically. Group
+visibility depends on Telegram privacy settings and permissions.
 
-One process polls each configured bot account, even with multiple connections.
-Instance and bot locks prevent duplicate listeners sharing a state directory.
-All Bridges instances using the same bot on a host must share `state_dir`.
+## Shared sessions
 
-## Focus and sessions
+A logical `session_id` is a stable Bridges name. Its backend conversation pointer,
+`thread_id`, is stored once in `<state_dir>/<instance_id>/sessions.json`.
 
-The MCP server name is `bridges`. A session can call:
+On incoming messages:
 
-```text
-bridges.focus(connection_id="personal")
-```
+- Null pointer: create a conversation, save the pointer, and deliver the message.
+- Existing loaded conversation: deliver normally.
+- Existing unloaded conversation: load that same conversation before delivery.
+- Confirmed deleted/missing conversation: create one replacement for the group.
+- Temporary or unclassified failure: preserve the pointer rather than replace history.
 
-The current session comes from host-provided MCP metadata, not a tool argument.
-Bridges verifies that it is loaded in the App Server configured for the
-authenticated client. A successful call atomically replaces only that
-connection's focus. A session can focus multiple connections; each connection
-has at most one focused session. Repeated calls from the same session are
-idempotent. Concurrent calls are serialized; the last successful assignment wins.
+Creation sends no initialization prompt. The actual incoming message starts the
+first turn. Each logical session has a bounded queue and lock; shared connections
+cannot race creation/replacement, while independent sessions progress concurrently.
+There is no durable inbox or automatic retry of ambiguous submissions.
 
-Assignments survive Bridges restarts. Bridges never loads an old conversation
-just because it remains focused. When an application is offline, its session is
-unloaded, or a connection has no focus, incoming messages are dropped with a
-local diagnostic. There is no durable inbox or automatic fallback to another chat.
-A restarted application can resume its own session, or a new session can explicitly
-claim the connection with `focus`.
+A durable pending marker prevents repeated automatic creation after a lost
+acknowledgement or interrupted final save. Inspect backend state before explicitly
+using `/new_session` to recover uncertain creation. Corrupt state fails startup.
 
-Focus and delivery are serialized per connection. An already-submitted message
-cannot be recalled; messages still awaiting submission use the focus in effect
-when delivery begins. A transfer cancels typing refreshes for the displaced
-session on that connection only. Other connections are unaffected.
+Telegram is the implemented messaging transport. Additional transports can route
+through the same session manager; Discord and cron adapters are not included.
 
-**Bridges has no policy for which sessions should focus which connections.** Put
-that policy in your application's instructions, such as `AGENTS.md`. Neither MCP
-server instructions nor protocol documentation tell agents to claim connections
-automatically. `focus` also does not change models or create conversations.
+## Admin commands
 
-## Messages and tools
+Both bot `admin` and connection `allow_admin` must be true; both default to false.
+Recognized commands are handled by Bridges and never become model prompts.
 
-Incoming messages steer an active turn or start a turn in an already-loaded idle
-session. They carry a fenced YAML header, a blank line, and original message text:
+- `/new_session`: create an empty conversation and replace the shared pointer for
+  every connection in the logical session. Previous history remains saved.
+- `/model [model]`: show choices/current model or save a model for the shared session.
+- `/thinking [level]`: show choices/current reasoning effort or save a supported level.
 
-````text
-```yaml
-bridge_context:
-  bridge: telegram
-  connection_id: personal
-  message_id: 123
-  reply_to_message_id: 120
-  received_at: '2026-11-14T17:24:30Z'
-```
+Settings persist and apply on the next idle turn, including new conversations in
+the same logical session. Availability comes from the backend's model catalog.
+At startup Bridges configures bot commands, permitted chat scopes, and private-chat
+menu buttons.
 
-Hello!
-````
+## MCP tools and messages
 
-Routing uses a separate listener-produced connection ID, never parsed message
-text. Photos, voice/audio and documents add opaque attachment handles to the
-header. Edits, reactions, service messages, and channel posts are ignored.
+With Telegram connections configured, the server exposes `get_protocol_docs`,
+`telegram_send_text`, `telegram_send_images`, `telegram_send_file`,
+`telegram_download_images`, and `telegram_download_file`. There is no agent-controlled
+`focus` or session-management MCP tool.
 
-Every Telegram envelope includes its `message_id`. Replies also include
-`reply_to_message_id`, identifying the original message in the same chat. Match
-it against earlier incoming context or the IDs returned by send tools. The
-original content is not fetched or embedded, and replies to external chats do
-not populate this field.
+Bearer authentication selects the backend. Host metadata identifies the calling
+conversation; outbound tools verify it is loaded in that backend. Outbound
+destinations are explicit and do not change session mappings.
 
-| Tool | Purpose |
-| --- | --- |
-| `get_protocol_docs` | Envelope, enabled tools, connections and current focus |
-| `focus(connection_id)` | Move one connection's inbound focus to the calling session |
-| `telegram_send_text` | Send MarkdownV2 text |
-| `telegram_send_images` | Send local images, with an optional caption |
-| `telegram_send_file` | Send a local file |
-| `telegram_download_images` | Download image handles, optionally returning inline image content |
-| `telegram_download_file` | Download a document or audio handle; no transcription |
-| `telegram_set_typing` | Enable/disable refreshes for one focused connection and calling turn |
+Incoming messages carry fenced YAML `bridge_context` metadata and unchanged body
+text. Required fields are `bridge`, `connection_id`, `message_id`, and `received_at`.
+Replies include `reply_to_message_id`. Attachments use bounded, connection-scoped,
+ephemeral handles. Audio is not transcribed. File paths are local to the bridge host.
 
-`focus` requires `connection_id`. Telegram tools may omit it only if exactly one
-connection is configured. Outbound destinations are explicit and do not change
-focus. Ordinary assistant prose is not forwarded to Telegram; use a send tool.
+Ordinary assistant prose is not forwarded to Telegram: use send tools and select
+the originating connection. Outgoing text/captions use MarkdownV2 unchanged. Escape
+literal punctuation according to Telegram's rules. Uncertain sends are not retried;
+partial image batches report completed IDs and the failed index.
 
-All outgoing text and photo/file captions use `parse_mode="MarkdownV2"`.
-Write `*bold*`, `_italic_`, and `[label](https://example.com)` for formatting.
-Escape literal punctuation according to
-[Telegram's MarkdownV2 rules](https://core.telegram.org/bots/api#markdownv2-style),
-including periods and exclamation marks. Tool parameter descriptions and
-`get_protocol_docs` include escaping guidance. Bridges passes markup through
-unchanged; invalid formatting is rejected without a plain-text fallback.
-Source text is limited to 4096 characters and captions to 1024, including markup.
-
-Only the currently focused session can change a connection's typing status.
-Refreshes stop on transfer, explicit disable, turn completion/replacement,
-disconnection, or service shutdown. Lifecycle is sampled approximately every
-second without taking ownership of the conversation. Telegram's visible indicator
-can linger until its expiry; sending a reply doesn't itself stop refreshes.
-
-Handles are bounded, connection-scoped, expire, and are lost on restart. Files
-are local to the bridge host. Sending has no exactly-once guarantee: uncertain
-outcomes are not blindly retried. Partial image batches report completed IDs.
-
-## Operations and validation
-
-Bridges can start before applications and keep running while they restart.
-SIGTERM stops its listeners and MCP endpoint without stopping application processes.
-To clear routing explicitly, stop Bridges and run `bridges reset-focus --config ...`.
-This does not alter application conversations or files.
-
-The old combined-runner `codex:` configuration and `reset-binding` command are no
-longer supported. Move session ownership to your application; see
-[migration guidance](docs/deployment.md).
-
-Run `pytest -q`, `ruff check src tests`, and `ruff format --check src tests`.
-Socket integration tests require permission to bind localhost and Unix sockets.
-Set `BRIDGES_CODEX_TEST_BINARY` to run the optional installed App Server check.
-See [validation](docs/validation.md) and [design](DESIGN.md). The App Server
-integration remains experimental; human approval/input requests need an operator
-interface in the owning application.
+Typing starts automatically after accepted incoming delivery and stops when the
+owning turn completes, changes, disconnects, or its shared session is replaced.
+Slow typing requests do not block delivery. Bridges preserves backend approval/input
+policy and never answers approval requests on the user's behalf.

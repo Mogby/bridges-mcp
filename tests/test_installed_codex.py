@@ -36,6 +36,19 @@ async def test_installed_app_server_connection_does_not_own_process(tmp_path, so
         await backend.connect()
         with pytest.raises(BridgeError):
             await backend.session("missing")
+        # Create an empty session: no synthetic user message or model turn.
+        created = await backend.create(str(tmp_path), {})
+        thread = created["thread_id"]
+        assert (await backend.session(thread)).state.status == "idle"
+        await backend.load(thread, str(tmp_path), {})
+        models = await backend.models()
+        assert models
+        import uuid
+
+        missing = str(uuid.uuid4())
+        with pytest.raises(BridgeError) as absent:
+            await backend.load(missing, str(tmp_path), {})
+        assert absent.value.code == "thread_missing"
         await backend.close()
         assert proc.returncode is None
     finally:

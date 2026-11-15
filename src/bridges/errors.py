@@ -8,3 +8,7 @@ class BridgeError(Exception):
 
     def result(self):
         return {"code": self.code, "message": str(self), **self.details}
+
+
+class OperationRejected(BridgeError):
+    """A backend explicitly rejected a mutation; its outcome is known."""
