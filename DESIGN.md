@@ -7,6 +7,11 @@ attachment handles, typing refreshes, and persistent per-connection focus.
 Applications own Codex App Server processes, subscription login, model settings,
 conversation creation/resumption, workspace instructions, and startup turns.
 Bridges must never launch an application or call `thread/start` or `thread/resume`.
+Optional Telegram admin commands use a separate application-owned control socket.
+Both bot `admin` and connection `allow_admin` must be true. The application creates
+new sessions and persists model/thinking choices; Bridges validates responses,
+transfers the requesting connection's focus, and uses application-supplied options
+on the next idle turn. See [admin control](docs/admin.md).
 
 ```mermaid
 flowchart LR

@@ -5,12 +5,14 @@ import logging
 import mimetypes
 import secrets
 from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 from PIL import Image, UnidentifiedImageError
 
+from .admin import COMMANDS, command_from
 from .envelope import normalize
 from .errors import BridgeError
 
@@ -150,6 +152,7 @@ class TelegramBridge:
         )
         self.sleep = sleep
         self.tasks = []
+        self.usernames = {}
 
     def connection(self, name=None):
         connections = self.config.telegram.connections
@@ -182,6 +185,10 @@ class TelegramBridge:
                             "Remove the configured webhook explicitly before starting polling.",
                         )
                     checked = True
+                    if self.config.telegram.bots[bot].admin:
+                        identity = await api.call("getMe")
+                        self.usernames[bot] = identity["username"]
+                        await api.call("setMyCommands", {"commands": COMMANDS})
                 updates = await api.call(
                     "getUpdates", {"offset": offset, "timeout": 25, "allowed_updates": ["message"]}
                 )
@@ -200,6 +207,10 @@ class TelegramBridge:
                             update, bot, self.config.telegram.connections, self.handles
                         )
                         if envelope:
+                            envelope = replace(
+                                envelope,
+                                command=command_from(update["message"], self.usernames.get(bot)),
+                            )
                             self.enqueue(envelope)
                     except (KeyError, TypeError, ValueError):
                         log.warning("telegram_update_dropped reason=invalid_payload")

@@ -24,10 +24,12 @@ class Model(BaseModel):
 
 class Bot(Model):
     token_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    admin: bool = False
 
 
 class Connection(Model):
     bot: str
+    allow_admin: bool = False
     chat_id: StrictStr = Field(pattern=r"^-?[0-9]+$")
     message_thread_id: int | None = Field(default=None, gt=0)
     label: str | None = None
@@ -68,6 +70,7 @@ class Telegram(Model):
 class Client(Model):
     token_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     socket_path: str = Field(pattern=r"^/")
+    control_socket_path: str | None = Field(default=None, pattern=r"^/")
 
 
 class HTTP(Model):

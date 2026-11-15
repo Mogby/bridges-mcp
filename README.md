@@ -80,6 +80,21 @@ local diagnostic. There is no durable inbox or automatic fallback to another cha
 A restarted application can resume its own session, or a new session can explicitly
 claim the connection with `focus`.
 
+### Optional Telegram admin commands
+
+Set both the bot's `admin: true` and the connection's `allow_admin: true` to enable
+`/new_session`, `/model [model]`, and `/thinking [level]`. Both flags default to
+`false`. Enabling a bot registers its command menu with Telegram. Bridges checks
+both flags on every recognized command; denied commands never reach the model.
+Model and thinking queries list current settings and available choices.
+
+Applications opt in with a private `control_socket_path`. The application creates
+sessions and persists settings; Bridges moves only the requesting connection's
+focus after a verified new-session response. Settings changes apply on the next
+turn in the current session. New sessions use application defaults and preserve
+the previous conversation. See [admin setup and protocol](docs/admin.md), including
+the reusable application-side example. No admin MCP tools are exposed.
+
 Focus and delivery are serialized per connection. An already-submitted message
 cannot be recalled; messages still awaiting submission use the focus in effect
 when delivery begins. A transfer cancels typing refreshes for the displaced

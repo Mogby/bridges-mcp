@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +37,29 @@ async def test_installed_app_server_connection_does_not_own_process(tmp_path, so
         await backend.connect()
         with pytest.raises(BridgeError):
             await backend.session("missing")
+        # The test acts as the owning application; Bridges never starts threads.
+        from test_admin import application_control
+
+        from bridges.admin import ApplicationControl
+
+        created = await backend.rpc.request("thread/start", {"cwd": str(tmp_path)})
+        owner = application_control()(
+            backend.rpc.request, tmp_path / "session.json", {"cwd": str(tmp_path)}
+        )
+        owner.loaded(created)
+        control_path = str(Path(path).parent / "control.sock")
+        await owner.start(control_path)
+        try:
+            control = ApplicationControl(control_path)
+            thread = created["thread"]["id"]
+            assert (await control.turn_settings(thread))["model"] == created["model"]
+            queried = await control.request("one", thread, "model", "")
+            assert "Current model:" in queried["message"]
+            fresh = await control.request("one", thread, "new_session", "")
+            assert fresh["thread_id"] != thread
+            assert (await backend.session(fresh["thread_id"])).state.status == "idle"
+        finally:
+            await owner.close()
         await backend.close()
         assert proc.returncode is None
     finally:

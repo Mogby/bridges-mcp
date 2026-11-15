@@ -6,6 +6,7 @@ import logging
 from websockets.asyncio.client import unix_connect
 from websockets.exceptions import WebSocketException
 
+from ..admin import ApplicationControl
 from ..errors import BridgeError
 from .base import Delivery, Transport, TurnState
 from .rpc import MAX_FRAME, RPC, RPCRejected
@@ -16,6 +17,9 @@ log = logging.getLogger(__name__)
 class AppServer:
     def __init__(self, config):
         self.config = config
+        self.control = (
+            ApplicationControl(config.control_socket_path) if config.control_socket_path else None
+        )
         self.rpc = None
         self.sessions = {}
         self.connect_lock = asyncio.Lock()
@@ -39,7 +43,7 @@ class AppServer:
             rpc = RPC(socket, on_event=self.event, on_disconnect=self.disconnected)
             try:
                 await rpc.request(
-                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.2.1"}}
+                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.3.0"}}
                 )
                 await rpc.send({"method": "initialized"})
             except BaseException:
@@ -53,7 +57,7 @@ class AppServer:
         async with self.session_lock:
             session = self.sessions.get(thread_id)
             if session is None:
-                session = AppServerSession(self, thread_id)
+                session = AppServerSession(self, thread_id, self.control)
             state = await session.snapshot()
             if state.status not in {"idle", "active"}:
                 raise BridgeError(
@@ -89,9 +93,10 @@ class AppServer:
 
 
 class AppServerSession(Transport):
-    def __init__(self, backend, thread_id):
+    def __init__(self, backend, thread_id, control=None):
         super().__init__()
         self.backend, self.thread_id = backend, thread_id
+        self.control = control
         self.event_revision = 0
         self.pending_requests = {}
         self.snapshot_lock = asyncio.Lock()
@@ -184,6 +189,8 @@ class AppServerSession(Transport):
                     params["expectedTurnId"] = state.turn_id
                 revision = self.event_revision
                 try:
+                    if method == "turn/start" and self.control is not None:
+                        params.update(await self.control.turn_settings(self.thread_id))
                     result = await self.rpc.request(method, params)
                     if method == "turn/start" and revision == self.event_revision:
                         turn = result["turn"]

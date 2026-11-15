@@ -7,6 +7,7 @@ from pathlib import Path
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, UnidentifiedImageError
 
+from .admin import ApplicationControl
 from .envelope import Handles
 from .errors import BridgeError
 from .registry import Registry
@@ -39,6 +40,10 @@ class Runtime:
             else {name: AppServer(client) for name, client in config.clients.items()}
         )
         self.focuses = state.read_focus()
+        self.controls = {
+            name: ApplicationControl(client.control_socket_path)
+            for name, client in config.clients.items()
+        }
         self.typing = {}
         self.connection_locks = {key: asyncio.Lock() for key in config.telegram.connections}
         self.ready = False
@@ -47,6 +52,7 @@ class Runtime:
     def enqueue(self, envelope):
         try:
             self.queue.put_nowait(envelope)
+            log.info("inbound_received connection_id=%s", envelope.connection_id)
         except asyncio.QueueFull:
             log.warning("inbound_dropped reason=buffer_full")
 
@@ -85,11 +91,49 @@ class Runtime:
             self.focuses = updated
         return {"connection_id": connection_id, **target}
 
+    async def admin_command(self, envelope):
+        """Run under the same connection lock as focus and ordinary delivery."""
+        connection_id, connection = self.telegram.connection(envelope.connection_id)
+        bot = self.config.telegram.bots[connection.bot]
+        message = "Admin commands are disabled for this connection."
+        if bot.admin and connection.allow_admin:
+            target = self.focuses.get(connection_id)
+            if target is None:
+                message = "Focus an application session before using admin commands."
+            else:
+                command, argument = envelope.command
+                if command == "new_session" and argument:
+                    message = "Usage: /new_session"
+                else:
+                    try:
+                        control = self.controls.get(target["client_id"])
+                        if control is None:
+                            raise BridgeError("admin_unavailable", "Application is not configured.")
+                        response = await control.request(
+                            connection_id, target["thread_id"], command, argument
+                        )
+                        if command == "new_session":
+                            await self.focus(
+                                connection_id, target["client_id"], response["thread_id"]
+                            )
+                        message = response["message"]
+                    except BridgeError as exc:
+                        message = str(exc)
+                    except (OSError, ValueError, TypeError):
+                        message = "Session routing failed; check application state before retrying."
+        # Application messages are plain text, not agent-authored Markdown.
+        await self.telegram.clients[connection.bot].call(
+            "sendMessage", {**connection.destination(), "text": message}, mutating=True
+        )
+
     async def deliver_loop(self):
         while True:
             envelope = await self.queue.get()
             try:
                 async with self.connection_locks[envelope.connection_id]:
+                    if envelope.command is not None:
+                        await self.admin_command(envelope)
+                        continue
                     target = self.focuses.get(envelope.connection_id)
                     if not target:
                         log.info("inbound_dropped reason=unfocused")

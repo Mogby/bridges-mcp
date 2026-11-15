@@ -13,6 +13,7 @@ from .errors import BridgeError
 class Inbound:
     connection_id: str
     text: str
+    command: tuple[str, str] | None = None
 
 
 @dataclass

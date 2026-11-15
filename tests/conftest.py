@@ -66,6 +66,10 @@ async def runtime(config):
     async def call(method, *args, **kwargs):
         if method == "getWebhookInfo":
             return {"url": ""}
+        if method == "getMe":
+            return {"username": "TestBot"}
+        if method == "setMyCommands":
+            return True
         if method == "getUpdates":
             await asyncio.Event().wait()
         return {"message_id": 7}
