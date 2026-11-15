@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridges-mcp"
-version = "0.4.1"
+version = "0.5.0"
 description = "Messaging MCP server with shared sessions and harness adapters"
 license = "MIT"
 license-files = ["LICENSE"]

@@ -19,7 +19,6 @@ async def test_cli_http_start_stop_without_codex(tmp_path):
     config.write_text(
         json.dumps(
             {
-                "instance_id": "test",
                 "state_dir": str(tmp_path / "state"),
                 "http": {"port": port},
                 "clients": {

@@ -1,4 +1,3 @@
-instance_id: main
 http:
   port: 8765
 clients:
@@ -22,4 +21,3 @@ telegram:
       session_id: personal
       allow_admin: false
 state_dir: /var/lib/bridges-mcp
-download_dir: /srv/assistant/downloads

@@ -86,13 +86,11 @@ class HTTP(Model):
 
 
 class Config(Model):
-    instance_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
     http: HTTP = Field(default_factory=HTTP)
     clients: dict[str, Client] = Field(default_factory=dict)
     sessions: dict[str, Session] = Field(default_factory=dict)
     telegram: Telegram = Field(default_factory=Telegram)
     state_dir: str = "~/.local/state/bridges"
-    download_dir: str | None = None
     buffer_size: int = Field(default=256, gt=0, le=10000)
     attachment_limit: int = Field(default=4096, gt=0, le=100000)
     attachment_ttl_seconds: int = Field(default=86400, gt=0)
@@ -113,11 +111,7 @@ class Config(Model):
 
     @property
     def downloads(self):
-        return (
-            Path(self.download_dir).expanduser().resolve()
-            if self.download_dir
-            else self.state_path / self.instance_id / "downloads"
-        )
+        return self.state_path / "downloads"
 
     def client_tokens(self):
         result = {}

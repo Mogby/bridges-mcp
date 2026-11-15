@@ -6,7 +6,7 @@ import pytest
 from bridges.config import Config
 from bridges.errors import BridgeError
 from bridges.runtime import Runtime
-from bridges.state import InstanceState
+from bridges.state import State
 from bridges.transports.base import Delivery, ModelInfo, Transport, TurnState
 
 
@@ -70,7 +70,6 @@ class FakeBackend:
 def config(tmp_path):
     return Config.model_validate(
         {
-            "instance_id": "test",
             "state_dir": str(tmp_path),
             "clients": {"app": {"token_env": "APP_TOKEN", "socket_path": "/tmp/app.sock"}},
             "sessions": {
@@ -95,7 +94,7 @@ def config(tmp_path):
 
 @pytest.fixture
 async def runtime(config):
-    state = InstanceState(config.state_path, config.instance_id)
+    state = State(config.state_path)
     state.acquire()
     state.save_sessions(
         {

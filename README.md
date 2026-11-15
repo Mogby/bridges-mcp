@@ -68,7 +68,9 @@ visibility depends on Telegram privacy settings and permissions.
 ## Shared sessions
 
 A logical `session_id` is a stable Bridges name. Its backend conversation pointer,
-`thread_id`, is stored once in `<state_dir>/<instance_id>/sessions.json`.
+`thread_id`, is stored once in `<state_dir>/sessions.json`. Downloads always use
+`<state_dir>/downloads`. Each process uses its own `state_dir` and HTTP port; no
+instance identifier or download-directory override is required.
 
 On incoming messages:
 

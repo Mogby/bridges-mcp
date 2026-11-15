@@ -6,12 +6,12 @@ from pydantic import ValidationError
 
 from bridges.config import Config
 from bridges.errors import BridgeError
-from bridges.state import InstanceState
+from bridges.state import State
 
 
 def test_application_launch_settings_rejected():
     with pytest.raises(ValidationError):
-        Config.model_validate({"instance_id": "test", "codex": {"executable": "codex"}})
+        Config.model_validate({"codex": {"executable": "codex"}})
 
 
 async def test_bridges_starts_without_daemon(runtime):
@@ -32,10 +32,10 @@ async def test_bridges_starts_without_daemon(runtime):
     ],
 )
 def test_invalid_session_state_rejected(tmp_path, sessions):
-    state = InstanceState(tmp_path, "test")
+    state = State(tmp_path)
     state.acquire()
     try:
-        state.sessions_path.write_text(json.dumps({"instance_id": "test", "sessions": sessions}))
+        state.sessions_path.write_text(json.dumps({"sessions": sessions}))
         with pytest.raises(BridgeError):
             state.read_sessions()
     finally:

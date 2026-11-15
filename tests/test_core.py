@@ -9,7 +9,7 @@ from bridges.config import Config, load_config
 from bridges.envelope import Attachment, Handles, Inbound, normalize
 from bridges.errors import BridgeError
 from bridges.registry import Registry
-from bridges.state import InstanceState, identity
+from bridges.state import State, identity
 
 
 def test_config_routes_and_strict_ids(config):
@@ -29,7 +29,7 @@ def test_config_routes_and_strict_ids(config):
 
 def test_config_secrets_not_in_errors(tmp_path, monkeypatch, config):
     path = tmp_path / "bad.yaml"
-    path.write_text("instance_id: test\nsecret: super-secret-token\n")
+    path.write_text("secret: super-secret-token\n")
     with pytest.raises(BridgeError) as exc:
         load_config(path)
     assert "super-secret" not in str(exc.value)
@@ -43,24 +43,28 @@ def test_config_secrets_not_in_errors(tmp_path, monkeypatch, config):
 
 
 def test_empty_registry():
-    config = Config(instance_id="empty")
+    config = Config()
     registry = Registry(config)
     assert list(registry.by_name) == ["get_protocol_docs"]
     assert "telegram" not in registry.docs("chat")
 
 
 def test_session_persistence_and_lock(tmp_path):
-    first = InstanceState(tmp_path, "test")
+    first = State(tmp_path)
     first.acquire(["123:secret"])
     targets = {"shared": {"thread_id": "chat-one"}}
     first.save_sessions(targets)
     assert first.read_sessions() == targets
-    for name in ["test", "other"]:
-        second = InstanceState(tmp_path, name)
-        with pytest.raises(BridgeError, match="running"):
-            second.acquire(["123:secret"])
+    second = State(tmp_path)
+    with pytest.raises(BridgeError, match="running"):
+        second.acquire(["123:secret"])
+    independent = State(tmp_path / "other")
+    independent.acquire()
+    independent.save_sessions({"shared": {"thread_id": "different"}})
+    assert independent.read_sessions() != first.read_sessions()
+    independent.close()
     first.close()
-    restarted = InstanceState(tmp_path, "test")
+    restarted = State(tmp_path)
     restarted.acquire()
     assert restarted.read_sessions() == targets
     restarted.save_sessions({})
@@ -212,7 +216,7 @@ async def test_bounded_burst_submits_without_waiting_for_turn(runtime):
 
 
 def test_empty_list_disables_telegram():
-    config = Config.model_validate({"instance_id": "empty", "telegram": {"connections": []}})
+    config = Config.model_validate({"telegram": {"connections": []}})
     assert list(Registry(config).by_name) == ["get_protocol_docs"]
 
 
@@ -230,3 +234,42 @@ def test_header_fenced_body_untouched(config):
     header, original = encoded[len("```yaml\n") :].split("\n```\n\n", 1)
     assert "\n---\n" not in header
     assert original == body
+
+
+def test_flat_state_and_fixed_download_directory(tmp_path):
+    config = Config(state_dir=str(tmp_path))
+    assert config.downloads == tmp_path / "downloads"
+    state = State(config.state_path)
+    state.acquire()
+    try:
+        state.save_sessions({"personal": {"thread_id": "kept"}})
+        assert state.sessions_path == tmp_path / "sessions.json"
+        assert json.loads(state.sessions_path.read_text()) == {
+            "sessions": {"personal": {"thread_id": "kept"}}
+        }
+        assert (tmp_path / "server.lock").exists()
+    finally:
+        state.close()
+
+
+@pytest.mark.parametrize("removed", [{"instance_id": "main"}, {"download_dir": "/tmp/override"}])
+def test_removed_storage_config_fields_rejected(removed):
+    with pytest.raises(ValidationError):
+        Config.model_validate(removed)
+
+
+def test_unmigrated_nested_state_is_not_silently_ignored(tmp_path):
+    old = tmp_path / "main"
+    old.mkdir()
+    (old / "sessions.json").write_text(
+        json.dumps({"sessions": {"personal": {"thread_id": "kept"}}})
+    )
+    state = State(tmp_path)
+    state.acquire()
+    try:
+        with pytest.raises(BridgeError) as exc:
+            state.read_sessions()
+        assert exc.value.code == "migration_required"
+        assert not state.sessions_path.exists()
+    finally:
+        state.close()

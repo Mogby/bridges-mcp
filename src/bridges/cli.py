@@ -19,7 +19,7 @@ from .config import load_config
 from .errors import BridgeError
 from .runtime import Runtime
 from .server import create_server
-from .state import InstanceState
+from .state import State
 from .telegram import TelegramAPI
 
 
@@ -116,7 +116,7 @@ async def run_http(runtime, server, client_tokens):
 
 
 async def run(config, tokens, client_tokens):
-    state = InstanceState(config.state_path, config.instance_id)
+    state = State(config.state_path)
     state.acquire(tokens.values())
     runtime = None
     try:
@@ -146,7 +146,7 @@ async def discover_telegram(config, bot=None):
             )
         bot = next(iter(config.telegram.bots))
     token = config.token(bot)
-    state = InstanceState(config.state_path, config.instance_id)
+    state = State(config.state_path)
     state.acquire([token])
     api = TelegramAPI(token)
     try:
@@ -214,7 +214,7 @@ def main():
         if args.command == "discover-telegram":
             asyncio.run(discover_telegram(config, args.bot))
         elif args.command == "reset-sessions":
-            state = InstanceState(config.state_path, config.instance_id)
+            state = State(config.state_path)
             state.acquire()
             try:
                 state.save_sessions({})

@@ -7,16 +7,15 @@ from pathlib import Path
 from .errors import BridgeError
 
 
-class InstanceState:
-    def __init__(self, root: Path, instance_id: str):
-        self.root, self.instance_id = root, instance_id
-        self.directory = root / instance_id
+class State:
+    def __init__(self, root: Path):
+        self.root = self.directory = root
         self.sessions_path = self.directory / "sessions.json"
         self.locks = []
 
     def acquire(self, tokens=()):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        keys = ["instance-" + self.instance_id]
+        keys = ["server"]
         keys += ["bot-" + hashlib.sha256(t.split(":", 1)[0].encode()).hexdigest() for t in tokens]
         try:
             for key in sorted(keys):
@@ -26,8 +25,8 @@ class InstanceState:
                 except OSError:
                     os.close(fd)
                     raise BridgeError(
-                        "instance_conflict",
-                        "This instance or bot already has a running bridge process.",
+                        "state_conflict",
+                        "This state directory or bot already has a running bridge process.",
                     ) from None
                 self.locks.append(fd)
         except BaseException:
@@ -41,10 +40,19 @@ class InstanceState:
                 raise BridgeError(
                     "migration_required", "Migrate legacy focus to sessions.json first."
                 )
+            if any(self.directory.glob("*/sessions.json")):
+                raise BridgeError(
+                    "migration_required",
+                    "Move legacy session state to state_dir/sessions.json first.",
+                )
             return {}
         try:
             data = json.loads(self.sessions_path.read_text())
-            if data["instance_id"] != self.instance_id or not isinstance(data["sessions"], dict):
+            if (
+                not isinstance(data, dict)
+                or set(data) != {"sessions"}
+                or not isinstance(data["sessions"], dict)
+            ):
                 raise ValueError()
             for key, value in data["sessions"].items():
                 if (
@@ -77,7 +85,7 @@ class InstanceState:
         fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
         try:
             with os.fdopen(fd, "w") as stream:
-                json.dump({"instance_id": self.instance_id, "sessions": sessions}, stream)
+                json.dump({"sessions": sessions}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary.replace(self.sessions_path)

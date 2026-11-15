@@ -17,7 +17,7 @@ Bridges.
 Multiple connections may share one session; history and settings are shared, while
 transport settings and admin permissions remain per connection.
 
-`<state_dir>/<instance_id>/sessions.json` stores the group's nullable backend pointer
+`<state_dir>/sessions.json` stores the group's nullable backend pointer
 and saved overrides. A logical ID is independent of any harness-native session or
 conversation ID. Runtime changes override configured defaults until cleared.
 
@@ -40,7 +40,7 @@ Back up configuration and routing state. Add logical sessions and each connectio
 `session_id`. While stopped, import existing conversation pointers into:
 
 ```json
-{"instance_id":"main","sessions":{"personal":{"thread_id":"existing-conversation-id","model":"model-id","effort":"medium"}}}
+{"sessions":{"personal":{"thread_id":"existing-conversation-id","model":"model-id","effort":"medium"}}}
 ```
 
 Connections grouped together must agree on backend and initial conversation. Import
@@ -56,3 +56,17 @@ no migrated `sessions.json`; it does not silently discard an existing pointer.
 After verification, archive obsolete state. To deliberately clear shared pointers
 while stopped, use `bridges reset-sessions --config ...`. This does not delete backend
 conversation history. There is no `reset-focus` command.
+
+## Storage layout
+
+All state belongs directly to the configured `state_dir`: `sessions.json`,
+`downloads/`, and `server.lock`. Separate processes use separate state directories
+and HTTP ports. Downloads always use `<state_dir>/downloads`.
+
+When upgrading a nested state layout, stop Bridges, move the chosen
+`<old-directory>/sessions.json` into `state_dir`, and remove the old instance
+metadata field from its JSON wrapper, leaving only `{"sessions": {...}}`. Move
+existing downloads into `state_dir/downloads`, then remove the obsolete
+`instance_id` and `download_dir` configuration fields. Preserve all session
+pointers and settings. Restart after migration; unmigrated nested session files
+are detected instead of being silently treated as an empty installation.
