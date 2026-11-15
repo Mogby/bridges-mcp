@@ -42,7 +42,7 @@ class TypingManager:
             return
         owner = Owner(turn_id)
         self.owners[connection] = owner
-        # Sending typing must not block delivery, focus transfers or other chats.
+        # Sending typing must not block delivery, session replacements or other chats.
         owner.task = asyncio.create_task(self.refresh(connection, owner))
 
     async def refresh(self, connection, owner):

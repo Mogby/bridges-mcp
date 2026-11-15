@@ -19,12 +19,14 @@ async def test_sdk_schema_and_no_unauthenticated_tools(runtime):
             initialized = await client.initialize()
             assert initialized.serverInfo.name == "bridges"
             assert "focus(" not in initialized.instructions
-            assert len((await client.list_tools()).tools) == 7
+            assert len((await client.list_tools()).tools) == 6
             denied = await client.call_tool(
-                "focus", {"connection_id": "one"}, meta={"threadId": "chat", "client_id": "app"}
+                "telegram_send_text",
+                {"connection_id": "one", "text": "hi"},
+                meta={"threadId": "chat", "client_id": "app"},
             )
             assert denied.isError and denied.structuredContent["code"] == "unauthorized"
-            invalid = await client.call_tool("focus", {}, meta={"threadId": "chat"})
+            invalid = await client.call_tool("telegram_send_text", {}, meta={"threadId": "chat"})
             assert invalid.isError and invalid.structuredContent["code"] == "invalid_payload"
     finally:
         task.cancel()

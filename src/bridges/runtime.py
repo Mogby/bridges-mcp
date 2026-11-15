@@ -7,10 +7,10 @@ from pathlib import Path
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, UnidentifiedImageError
 
-from .admin import ApplicationControl
 from .envelope import Handles
 from .errors import BridgeError
 from .registry import Registry
+from .sessions import Sessions
 from .state import identity
 from .telegram import TelegramBridge
 from .transports.app_server import AppServer
@@ -39,13 +39,10 @@ class Runtime:
             if backends is not None
             else {name: AppServer(client) for name, client in config.clients.items()}
         )
-        self.focuses = state.read_focus()
-        self.controls = {
-            name: ApplicationControl(client.control_socket_path)
-            for name, client in config.clients.items()
-        }
+        self.sessions = Sessions(config, state, self.backends)
         self.typing = {}
-        self.connection_locks = {key: asyncio.Lock() for key in config.telegram.connections}
+        self.session_queues = {name: asyncio.Queue(config.buffer_size) for name in config.sessions}
+        self.consumers = []
         self.ready = False
         self.worker = None
 
@@ -57,13 +54,14 @@ class Runtime:
             log.warning("inbound_dropped reason=buffer_full")
 
     async def start(self):
-        # No Codex process or conversation is started here. A client may be offline.
+        # Startup never launches Codex or starts a model turn.
         self.ready = True
+        self.consumers = [asyncio.create_task(self.consume(name)) for name in self.session_queues]
         self.worker = asyncio.create_task(self.deliver_loop())
         await self.telegram.start()
 
     def protocol_docs(self, caller):
-        return self.registry.docs(caller, self.focuses)
+        return self.registry.docs(caller, self.sessions.records)
 
     async def session(self, client_id, thread_id):
         backend = self.backends.get(client_id)
@@ -77,51 +75,38 @@ class Runtime:
             self.typing[key] = TypingManager(session, self.telegram.typing)
         return self.typing[key]
 
-    async def focus(self, connection_id, client_id, caller):
-        await self.session(client_id, caller)
-        target = {"client_id": client_id, "thread_id": caller}
-        previous = self.focuses.get(connection_id)
-        if previous != target:
-            if previous:
-                manager = self.typing.get((previous["client_id"], previous["thread_id"]))
-                if manager:
+    async def stop_replaced_typing(self, name, previous):
+        configured = self.config.sessions[name]
+        manager = self.typing.get((configured.client, previous))
+        if manager:
+            for connection_id, connection in self.config.telegram.connections.items():
+                if connection.session_id == name:
                     await manager.stop(connection_id)
-            updated = {**self.focuses, connection_id: target}
-            self.store.save_focus(updated)
-            self.focuses = updated
-        return {"connection_id": connection_id, **target}
 
     async def admin_command(self, envelope):
-        """Run under the same connection lock as focus and ordinary delivery."""
-        connection_id, connection = self.telegram.connection(envelope.connection_id)
+        _, connection = self.telegram.connection(envelope.connection_id)
         bot = self.config.telegram.bots[connection.bot]
         message = "Admin commands are disabled for this connection."
         if bot.admin and connection.allow_admin:
-            target = self.focuses.get(connection_id)
-            if target is None:
-                message = "Focus an application session before using admin commands."
-            else:
-                command, argument = envelope.command
-                if command == "new_session" and argument:
-                    message = "Usage: /new_session"
-                else:
-                    try:
-                        control = self.controls.get(target["client_id"])
-                        if control is None:
-                            raise BridgeError("admin_unavailable", "Application is not configured.")
-                        response = await control.request(
-                            connection_id, target["thread_id"], command, argument
+            command, argument = envelope.command
+            try:
+                if command == "new_session":
+                    if argument:
+                        message = "Usage: /new_session"
+                    else:
+                        previous = self.sessions.record(connection.session_id)["thread_id"]
+                        await self.sessions.create(connection.session_id)
+                        await self.stop_replaced_typing(connection.session_id, previous)
+                        message = (
+                            "New empty session ready for all connections sharing this session. "
+                            "Your next message starts its first turn. Previous history is saved."
                         )
-                        if command == "new_session":
-                            await self.focus(
-                                connection_id, target["client_id"], response["thread_id"]
-                            )
-                        message = response["message"]
-                    except BridgeError as exc:
-                        message = str(exc)
-                    except (OSError, ValueError, TypeError):
-                        message = "Session routing failed; check application state before retrying."
-        # Application messages are plain text, not agent-authored Markdown.
+                else:
+                    message = await self.sessions.command(connection.session_id, command, argument)
+            except BridgeError as exc:
+                message = str(exc)
+            except (OSError, TimeoutError, ValueError, TypeError, KeyError):
+                message = "Session operation failed; check state before retrying."
         await self.telegram.clients[connection.bot].call(
             "sendMessage", {**connection.destination(), "text": message}, mutating=True
         )
@@ -129,20 +114,33 @@ class Runtime:
     async def deliver_loop(self):
         while True:
             envelope = await self.queue.get()
+            connection = self.config.telegram.connections.get(envelope.connection_id)
             try:
-                async with self.connection_locks[envelope.connection_id]:
+                if connection is None:
+                    raise KeyError()
+                self.session_queues[connection.session_id].put_nowait(envelope)
+            except (KeyError, asyncio.QueueFull):
+                log.warning("inbound_dropped reason=session_queue_unavailable")
+                self.queue.task_done()
+
+    async def consume(self, name):
+        queue = self.session_queues[name]
+        while True:
+            envelope = await queue.get()
+            try:
+                async with self.sessions.locks[name]:
                     if envelope.command is not None:
                         await self.admin_command(envelope)
                         continue
-                    target = self.focuses.get(envelope.connection_id)
-                    if not target:
-                        log.info("inbound_dropped reason=unfocused")
-                        continue
-                    session = await self.session(target["client_id"], target["thread_id"])
-                    delivery = await session.deliver(envelope.text)
+                    previous = self.sessions.record(name)["thread_id"]
+                    session = await self.sessions.ensure(name)
+                    if previous != session.thread_id:
+                        await self.stop_replaced_typing(name, previous)
+                    delivery = await session.deliver(envelope.text, self.sessions.options(name))
                     log.info("inbound_delivery outcome=%s code=%s", delivery.outcome, delivery.code)
                     if delivery.outcome == "accepted":
-                        await self.typing_for(target["client_id"], session).start(
+                        client_id = self.config.sessions[name].client
+                        await self.typing_for(client_id, session).start(
                             envelope.connection_id, delivery.turn_id
                         )
             except BridgeError as exc:
@@ -150,6 +148,7 @@ class Runtime:
             except Exception:  # noqa: BLE001 - sanitize upstream failures
                 log.warning("inbound_delivery outcome=unknown code=transport_failure")
             finally:
+                queue.task_done()
                 self.queue.task_done()
 
     async def call(self, name, arguments, meta, client_id=None):
@@ -164,12 +163,8 @@ class Runtime:
             if name == "get_protocol_docs":
                 return result(self.protocol_docs(caller))
             connection_id, connection = self.telegram.connection(arguments.get("connection_id"))
-            async with self.connection_locks[connection_id]:
-                if name == "focus":
-                    return result(await self.focus(connection_id, client_id, caller))
-                await self.session(client_id, caller)
-            # Outbound tools have explicit destinations; focus controls inbound routing
-            # and typing, not the user's choice of where to send a message.
+            await self.session(client_id, caller)
+            # Outbound destinations are explicit; shared sessions never broadcast.
             if name == "telegram_send_text":
                 data = await self.telegram.send_text(connection, arguments["text"])
             elif name == "telegram_send_file":
@@ -238,6 +233,9 @@ class Runtime:
         if self.worker:
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)
+        for consumer in self.consumers:
+            consumer.cancel()
+        await asyncio.gather(*self.consumers, return_exceptions=True)
         for manager in self.typing.values():
             await manager.close()
         await self.telegram.close()

@@ -8,11 +8,6 @@ from bridges.errors import BridgeError
 from bridges.transports.base import Delivery, TurnState
 
 
-async def focus(runtime, connection="one"):
-    result = await runtime.call("focus", {"connection_id": connection}, {"threadId": "chat"}, "app")
-    assert not result.isError
-
-
 async def receive(runtime, connection="one"):
     runtime.enqueue(Inbound(connection, "hello"))
     await asyncio.wait_for(runtime.queue.join(), 1)
@@ -21,7 +16,6 @@ async def receive(runtime, connection="one"):
 
 async def test_inbound_starts_typing_without_an_agent_tool_call(runtime):
     await runtime.start()
-    await focus(runtime)
     runtime.telegram.typing = AsyncMock()
     await receive(runtime)
     runtime.telegram.typing.assert_awaited_once_with("one")
@@ -38,7 +32,6 @@ async def test_inbound_starts_typing_without_an_agent_tool_call(runtime):
 @pytest.mark.parametrize("outcome", ["rejected", "unknown"])
 async def test_failed_delivery_never_starts_typing(runtime, outcome):
     await runtime.start()
-    await focus(runtime)
     runtime.telegram.typing = AsyncMock()
     runtime.backends["app"].sessions["chat"].deliver = AsyncMock(
         return_value=Delivery(outcome, "failed")
@@ -51,11 +44,10 @@ async def test_failed_delivery_never_starts_typing(runtime, outcome):
 @pytest.mark.parametrize("state", [TurnState("idle"), TurnState("active", "newer")])
 async def test_late_delivery_ack_does_not_type_for_completed_or_replacement_turn(runtime, state):
     await runtime.start()
-    await focus(runtime)
     runtime.telegram.typing = AsyncMock()
     session = runtime.backends["app"].sessions["chat"]
 
-    async def deliver(_):
+    async def deliver(_, options=None):
         session.update(state)
         return Delivery("accepted", "started", "old")
 
@@ -67,8 +59,6 @@ async def test_late_delivery_ack_does_not_type_for_completed_or_replacement_turn
 
 async def test_slow_typing_does_not_block_other_messages_or_focus_transfer(runtime):
     await runtime.start()
-    for connection in ["one", "two"]:
-        await focus(runtime, connection)
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def slow_typing(_):
@@ -83,11 +73,12 @@ async def test_slow_typing_does_not_block_other_messages_or_focus_transfer(runti
     await entered.wait()
     await receive(runtime, "two")
     assert runtime.backends["app"].sessions["chat"].delivered == ["hello", "hello"]
-    switched = await asyncio.wait_for(
-        runtime.call("focus", {"connection_id": "one"}, {"threadId": "other"}, "app"), 1
-    )
-    assert not switched.isError and cancelled.is_set()
-    assert set(runtime.typing[("app", "chat")].owners) == {"two"}
+    runtime.config.telegram.bots["main"].admin = True
+    runtime.config.telegram.connections["one"].allow_admin = True
+    runtime.enqueue(Inbound("one", "", ("new_session", "")))
+    await runtime.queue.join()
+    assert cancelled.is_set()
+    assert not runtime.typing[("app", "chat")].owners
 
 
 @pytest.mark.parametrize(
@@ -95,7 +86,6 @@ async def test_slow_typing_does_not_block_other_messages_or_focus_transfer(runti
 )
 async def test_typing_failure_does_not_fail_delivery_and_is_retried(runtime, error):
     await runtime.start()
-    await focus(runtime)
     runtime.telegram.typing = AsyncMock(side_effect=[error, None])
     manager = runtime.typing_for("app", runtime.backends["app"].sessions["chat"])
     retry, delays = asyncio.Event(), []
@@ -133,7 +123,6 @@ async def test_removed_typing_tool_is_neither_discovered_nor_callable(runtime):
 
 async def test_shutdown_cancels_typing_before_closing_telegram(runtime):
     await runtime.start()
-    await focus(runtime)
     runtime.telegram.typing = AsyncMock()
     await receive(runtime)
     manager = runtime.typing[("app", "chat")]

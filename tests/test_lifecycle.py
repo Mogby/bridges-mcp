@@ -96,7 +96,6 @@ async def test_typing_cancellation_waits_for_inflight_refresh():
 
 async def test_outbound_send_does_not_stop_typing(runtime):
     await runtime.start()
-    await runtime.call("focus", {"connection_id": "one"}, {"threadId": "chat"}, "app")
     runtime.enqueue(Inbound("one", "hello"))
     await runtime.queue.join()
     await runtime.call(
@@ -191,3 +190,24 @@ async def test_approval_and_input_requests_preserve_active_state(config):
     assert transport.state == TurnState("active", "turn")
     assert len(transport.pending_requests) == 2
     transport.rpc.send.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"code": -32600, "message": "permission denied: file not found"},
+        {"code": -32600, "message": "invalid thread id"},
+        {"code": -32600, "message": "provider mismatch", "data": {"type": "modelProviderMismatch"}},
+        {"code": -32603, "message": "no rollout found for thread id target"},
+    ],
+)
+async def test_resume_does_not_misclassify_other_errors_as_deleted(error):
+    from bridges.config import Client
+    from bridges.transports.app_server import AppServer
+
+    backend = AppServer(Client(token_env="TOKEN", socket_path="/tmp/test.sock"))
+    backend.connect = AsyncMock()
+    backend.rpc = AsyncMock()
+    backend.rpc.request.side_effect = RPCRejected({"error": error})
+    with pytest.raises(RPCRejected):
+        await backend.load("target", "/tmp", {})

@@ -29,6 +29,7 @@ class Bot(Model):
 
 class Connection(Model):
     bot: str
+    session_id: str = Field(min_length=1)
     allow_admin: bool = False
     chat_id: StrictStr = Field(pattern=r"^-?[0-9]+$")
     message_thread_id: int | None = Field(default=None, gt=0)
@@ -70,7 +71,13 @@ class Telegram(Model):
 class Client(Model):
     token_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     socket_path: str = Field(pattern=r"^/")
-    control_socket_path: str | None = Field(default=None, pattern=r"^/")
+
+
+class Session(Model):
+    client: str = Field(min_length=1)
+    cwd: str = Field(pattern=r"^/")
+    model: str | None = Field(default=None, min_length=1)
+    effort: str | None = Field(default=None, min_length=1)
 
 
 class HTTP(Model):
@@ -81,12 +88,23 @@ class Config(Model):
     instance_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,80}$")
     http: HTTP = Field(default_factory=HTTP)
     clients: dict[str, Client] = Field(default_factory=dict)
+    sessions: dict[str, Session] = Field(default_factory=dict)
     telegram: Telegram = Field(default_factory=Telegram)
     state_dir: str = "~/.local/state/bridges"
     download_dir: str | None = None
     buffer_size: int = Field(default=256, gt=0, le=10000)
     attachment_limit: int = Field(default=4096, gt=0, le=100000)
     attachment_ttl_seconds: int = Field(default=86400, gt=0)
+
+    @model_validator(mode="after")
+    def session_routes(self):
+        for name, session in self.sessions.items():
+            if not name.strip() or session.client not in self.clients:
+                raise ValueError("Sessions require a nonempty ID and a configured client")
+        for connection in self.telegram.connections.values():
+            if connection.session_id not in self.sessions:
+                raise ValueError("Connections must reference a configured session_id")
+        return self
 
     @property
     def state_path(self):

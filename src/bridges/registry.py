@@ -92,27 +92,25 @@ class Registry:
         self.specs = [
             ToolSpec(
                 "get_protocol_docs",
-                "Read enabled bridge protocols, tools, and current connection focus.",
+                "Read enabled bridge protocols, tools, and shared session mappings.",
                 {},
             )
         ]
         if config.telegram.connections:
-            self.specs.append(
-                ToolSpec(
-                    "focus",
-                    "Route incoming messages for one connection to the calling session. Replaces that connection's previous focus; other connections are unchanged.",
-                    {"connection_id": {"type": "string", "minLength": 1}},
-                    ("connection_id",),
-                )
-            )
             self.specs += TELEGRAM_TOOLS
         self.by_name = {spec.name: spec for spec in self.specs}
 
-    def docs(self, thread_id, focuses=None):
+    def docs(self, thread_id, sessions=None):
         docs = {
             "instructions": INSTRUCTIONS,
             "session": {"thread_id": thread_id},
-            "focus": focuses or {},
+            "sessions": {
+                name: {
+                    "client": configured.client,
+                    **(sessions or {}).get(name, {"thread_id": None}),
+                }
+                for name, configured in self.config.sessions.items()
+            },
             "envelope": {
                 "format": "YAML bridge_context header inside a triple-backtick yaml code fence, then a blank line and original body text. No --- separator.",
                 "required": ["bridge", "connection_id", "message_id", "received_at"],
@@ -127,14 +125,18 @@ class Registry:
         if self.config.telegram.connections:
             docs["telegram"] = {
                 "connections": [
-                    {"connection_id": key, **({"label": c.label} if c.label else {})}
+                    {
+                        "connection_id": key,
+                        "session_id": c.session_id,
+                        **({"label": c.label} if c.label else {}),
+                    }
                     for key, c in self.config.telegram.connections.items()
                 ],
                 "routing": "Everyone in configured conversations may instruct the agent. Choose destinations from user instructions. No automatic forwarding or last-active routing. connection_id may be omitted only with one connection.",
                 "input": "Only text, photos, voice/audio and documents. No edits, reactions or service events. Documents remain file handles even if their MIME type is an image.",
                 "formatting": MARKDOWN_V2,
                 "attachments": f"Handles expire after {self.config.attachment_ttl_seconds} seconds, eviction, or restart. Download paths are local to the bridge host. Audio is not transcribed.",
-                "typing": "Bridges automatically starts typing when an incoming message is accepted into the focused session and refreshes about every four seconds for that turn. Completion, failure, interruption, replacement, focus transfer, loss of lifecycle, or shutdown stops refreshes. Agents do not manage typing. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
+                "typing": "Bridges automatically starts typing when an incoming message is accepted into the mapped session and refreshes about every four seconds for that turn. Completion, failure, interruption, replacement, session replacement, loss of lifecycle, or shutdown stops refreshes. Agents do not manage typing. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
                 "errors": "Tool failures use isError and a machine-readable code. Never blindly retry delivery_unknown or a partially sent batch. Inspect completed_message_ids and failed_index.",
             }
         return docs

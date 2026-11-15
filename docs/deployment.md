@@ -1,70 +1,58 @@
-# Independent server and application deployment
+# Daemon deployment and migration
 
-Run Bridges as one long-lived HTTP service. Run each application as its own
-service; an application launches Codex and decides whether to start or resume
-conversations. Application code, credentials, configuration, and instructions
-live outside the Bridges repository.
+Manage Codex independently from Bridges. Provision its ChatGPT login, configuration,
+workspace, MCP bearer token environment, and protected Unix socket. The installed
+CLI's `codex app-server daemon bootstrap` installs native daemon management; inspect
+its output for the selected backend and socket path. On Linux the backend may be
+PID-based, so use your supervisor to invoke native start/stop on boot/shutdown.
+No custom Python application runner is required.
 
-## Bridges service
-
-The service runs `bridges serve --config /absolute/path/config.yaml` with bot
-and application bearer-token environment variables. See
-[the configuration example](../examples/app-server.yaml). Protect credentials
-using your supervisor's secret facility, such as systemd `LoadCredential`.
-
-Use a stable loopback port, a persistent `state_dir`, and application-accessible
-download directories. One Bridges process can serve several applications. Give
-each a distinct client ID, random bearer token, and App Server Unix socket path.
-The server can start with all applications offline. Restarting it preserves focus
-and does not restart applications. Configure supervisors independently; a Bridges
-stop must not cascade into stopping application services.
-
-## Application service
-
-The application runs its Codex App Server with a protected local socket, for example:
-
-```sh
-codex app-server --listen unix:///run/my-assistant/codex.sock
-```
-
-The owning application connects using WebSockets over that socket, initializes,
-and calls `thread/start` or `thread/resume`. It keeps its controlling connection
-open. Bridges uses a separate connection for observations and input delivery.
-A private runtime directory should protect the socket.
-
-In the application's own `CODEX_HOME/config.toml`, configure:
+In the daemon's Codex configuration:
 
 ```toml
 [mcp_servers.bridges]
 url = "http://127.0.0.1:8765/mcp"
-bearer_token_env_var = "ASSISTANT_MCP_TOKEN"
+bearer_token_env_var = "CODEX_MCP_TOKEN"
 ```
 
-Supply the matching token to the application's environment. Model, reasoning,
-approval, sandbox, and native-tool configuration also belongs in this Codex home.
-The application owns conversation persistence and applying model overrides on
-resume. Its normal startup turn can read its AGENTS.md. Bridges does not inject
-startup prompts or instructions to select connections.
+Supply that token securely to both services. Configure a matching `clients` entry
+in Bridges with the daemon socket path. Define logical `sessions` selecting the
+client and absolute workspace, then set every connection's `session_id`.
+Model/effort defaults can be configured on a logical session; sandbox and approval
+policies remain in the daemon's own configuration. Credentials never go into YAML.
 
-The model calls `bridges.focus(connection_id)` when application/user instructions
-request it. A fresh session replaces the previous target for that connection.
-An application restarting into the same loaded session can use existing focus.
-If it creates a new session, the old mapping stays unavailable until explicitly
-replaced. Incoming messages during unavailability are dropped; no inbox is stored.
+Bridges starts with no daemon available and creates no threads until input or an
+admin command needs one. It resumes saved threads on demand after either service
+restarts. Stopping Bridges disconnects its clients and typing tasks, never Codex.
 
-## Migrating from the combined runner
+## Migrating from 0.3.x
 
-The previous `codex:` config, bridge-owned `binding.json`, and `reset-binding`
-command are removed. Stop the old combined runner before starting the separate
-services, so there is only one Telegram poller.
+1. Back up configuration, legacy focus state, application session settings, and
+   application code before changing the running services.
+2. Add a logical session for each intended sharing group and bind connections via
+   `session_id`. Connections grouped together must agree on backend and initial thread.
+3. While Bridges is stopped, write `<state_dir>/<instance_id>/sessions.json`:
 
-Move the existing Codex home and chosen conversation ID into the owning
-application's configuration/state. Keep workspace files and instructions. Codex
-records can contain absolute paths: preserve access to old paths if relocating
-existing conversation files. Preserve login credentials only on their existing
-host, with restricted permissions.
+```json
+{"instance_id":"main","sessions":{"personal":{"thread_id":"existing-codex-thread-id","model":"model-id","effort":"medium"}}}
+```
 
-Start the application and use an explicit focus call to select its session.
-Bridges stores targets in `<state_dir>/<instance_id>/focus.json`. Stop the server
-before using `reset-focus` to clear all assignments. This command does not alter
-application history or restart/create any conversation.
+4. Import the pointer from legacy `focus.json` and the desired settings from the
+   owning application's saved state. Preserve the existing Codex home and history
+   while testing. A null pointer deliberately requests automatic creation.
+5. Remove `control_socket_path` from client configuration. Start Bridges 0.4.x,
+   verify six MCP tools and shared-session docs, and test model/thinking queries.
+6. Replace the custom application runtime with the native daemon. Point the Bridges
+   client at its socket and verify the existing thread resumes and messages/replies work.
+7. Remove obsolete focus/control instructions, custom runner code, legacy service
+   units, old session pointer, and legacy focus state after verification. Keep backups
+   separate from active configuration. Preserve credentials and conversation history.
+
+Bridges refuses to start with only a legacy `focus.json` and no new session state;
+it never silently treats existing routing as an empty installation. `focus` and
+`reset-focus` are removed. To deliberately clear all shared pointers while stopped,
+use `bridges reset-sessions --config ...`; this does not delete Codex history.
+
+If relocating a Codex home, account for stored absolute paths and symlinks. Verify
+resumption before removing the old path. Conversation data must not be discarded
+as part of removing an application wrapper.

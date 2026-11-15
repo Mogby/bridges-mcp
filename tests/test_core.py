@@ -14,7 +14,11 @@ from bridges.state import InstanceState, identity
 
 def test_config_routes_and_strict_ids(config):
     data = config.model_dump()
-    data["telegram"]["connections"]["overlap"] = {"bot": "main", "chat_id": "2"}
+    data["telegram"]["connections"]["overlap"] = {
+        "bot": "main",
+        "chat_id": "2",
+        "session_id": "shared",
+    }
     with pytest.raises(ValidationError):
         Config.model_validate(data)
     data["telegram"]["connections"].pop("overlap")
@@ -45,12 +49,12 @@ def test_empty_registry():
     assert "telegram" not in registry.docs("chat")
 
 
-def test_focus_persistence_and_lock(tmp_path):
+def test_session_persistence_and_lock(tmp_path):
     first = InstanceState(tmp_path, "test")
     first.acquire(["123:secret"])
-    targets = {"one": {"client_id": "app", "thread_id": "chat-one"}}
-    first.save_focus(targets)
-    assert first.read_focus() == targets
+    targets = {"shared": {"thread_id": "chat-one"}}
+    first.save_sessions(targets)
+    assert first.read_sessions() == targets
     for name in ["test", "other"]:
         second = InstanceState(tmp_path, name)
         with pytest.raises(BridgeError, match="running"):
@@ -58,9 +62,9 @@ def test_focus_persistence_and_lock(tmp_path):
     first.close()
     restarted = InstanceState(tmp_path, "test")
     restarted.acquire()
-    assert restarted.read_focus() == targets
-    restarted.save_focus({})
-    assert restarted.read_focus() == {}
+    assert restarted.read_sessions() == targets
+    restarted.save_sessions({})
+    assert restarted.read_sessions() == {}
     restarted.close()
 
 

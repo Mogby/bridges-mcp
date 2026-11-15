@@ -11,7 +11,7 @@ class InstanceState:
     def __init__(self, root: Path, instance_id: str):
         self.root, self.instance_id = root, instance_id
         self.directory = root / instance_id
-        self.focus_path = self.directory / "focus.json"
+        self.sessions_path = self.directory / "sessions.json"
         self.locks = []
 
     def acquire(self, tokens=()):
@@ -34,43 +34,60 @@ class InstanceState:
             self.close()
             raise
 
-    def read_focus(self):
-        """Only routing is persisted; applications own their conversation state."""
-        if not self.focus_path.exists():
+    def read_sessions(self):
+        """Read shared logical-session pointers and desired turn settings."""
+        if not self.sessions_path.exists():
+            if (self.directory / "focus.json").exists():
+                raise BridgeError(
+                    "migration_required", "Migrate legacy focus to sessions.json first."
+                )
             return {}
         try:
-            data = json.loads(self.focus_path.read_text())
-            if (
-                data["instance_id"] != self.instance_id
-                or not isinstance(data["connections"], dict)
-                or any(
-                    not isinstance(key, str)
-                    or not key
-                    or not isinstance(value, dict)
-                    or set(value) != {"client_id", "thread_id"}
-                    or any(not isinstance(v, str) or not v for v in value.values())
-                    for key, value in data["connections"].items()
-                )
-            ):
+            data = json.loads(self.sessions_path.read_text())
+            if data["instance_id"] != self.instance_id or not isinstance(data["sessions"], dict):
                 raise ValueError()
-            return data["connections"]
+            for key, value in data["sessions"].items():
+                if (
+                    not isinstance(key, str)
+                    or not key.strip()
+                    or not isinstance(value, dict)
+                    or "thread_id" not in value
+                    or set(value) - {"thread_id", "model", "effort", "creation_pending"}
+                    or (
+                        value["thread_id"] is not None
+                        and (not isinstance(value["thread_id"], str) or not value["thread_id"])
+                    )
+                    or any(
+                        not isinstance(v, str) or not v
+                        for k, v in value.items()
+                        if k not in {"thread_id", "creation_pending"}
+                    )
+                    or ("creation_pending" in value and type(value["creation_pending"]) is not bool)
+                ):
+                    raise ValueError()
+            return data["sessions"]
         except (ValueError, KeyError, TypeError):
-            raise BridgeError("invalid_focus", "Saved connection focus is invalid.") from None
+            raise BridgeError(
+                "invalid_sessions", "Saved shared-session state is invalid."
+            ) from None
 
-    def save_focus(self, connections):
-        """Replace the complete map atomically under the instance's process lock."""
-        temporary = self.focus_path.with_suffix(".tmp")
+    def save_sessions(self, sessions):
+        """Atomically persist all pointers before publishing them in memory."""
+        temporary = self.sessions_path.with_suffix(".tmp")
         fd = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w") as stream:
-            json.dump({"instance_id": self.instance_id, "connections": connections}, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(self.focus_path)
-        directory_fd = os.open(self.directory, os.O_RDONLY)
         try:
-            os.fsync(directory_fd)
+            with os.fdopen(fd, "w") as stream:
+                json.dump({"instance_id": self.instance_id, "sessions": sessions}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(self.sessions_path)
+            directory_fd = os.open(self.directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
-            os.close(directory_fd)
+            temporary.unlink(missing_ok=True)
 
     def close(self):
         for fd in self.locks:
