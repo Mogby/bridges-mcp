@@ -225,3 +225,62 @@ async def test_owned_settings_apply_on_start_but_not_steer():
     await session.deliver("more")
     assert "model" not in session.rpc.request.call_args.args[1]
     assert control.turn_settings.await_count == 1
+
+
+async def test_startup_configures_permitted_chats_and_private_menu_only(config):
+    from bridges.config import Connection
+    from bridges.envelope import Handles
+    from bridges.telegram import TelegramBridge
+
+    config.telegram.connections["one"].allow_admin = True
+    config.telegram.connections["two"].allow_admin = True
+    config.telegram.connections["duplicate"] = Connection(
+        bot="main", chat_id="2", message_thread_id=43, allow_admin=True
+    )
+    config.telegram.connections["denied"] = Connection(bot="main", chat_id="3")
+    api = AsyncMock()
+
+    async def call(method, data=None):
+        if method == "getMe":
+            return {"username": "MyBot"}
+        if method == "getChat":
+            return {"type": "private" if data["chat_id"] == "1" else "supergroup"}
+        return True
+
+    api.call.side_effect = call
+    bridge = TelegramBridge(config, {}, Handles(), lambda _: None, {"main": api})
+    await bridge.register_admin_commands("main")
+    calls = api.call.call_args_list
+    scoped = [
+        c.args[1]["scope"]["chat_id"]
+        for c in calls
+        if c.args[0] == "setMyCommands" and "scope" in c.args[1]
+    ]
+    assert scoped == ["1", "2"]
+    menus = [c.args[1] for c in calls if c.args[0] == "setChatMenuButton"]
+    assert menus == [{"chat_id": "1", "menu_button": {"type": "commands"}}]
+
+
+async def test_failed_chat_menu_does_not_block_remaining_connections(config):
+    from bridges.envelope import Handles
+    from bridges.telegram import TelegramBridge
+
+    for connection in config.telegram.connections.values():
+        connection.allow_admin = True
+    api = AsyncMock()
+
+    async def call(method, data=None):
+        if method == "getMe":
+            return {"username": "MyBot"}
+        if method == "setMyCommands" and data.get("scope", {}).get("chat_id") == "1":
+            raise BridgeError("telegram_unavailable", "Unavailable chat")
+        if method == "getChat":
+            return {"type": "private"}
+        return True
+
+    api.call.side_effect = call
+    bridge = TelegramBridge(config, {}, Handles(), lambda _: None, {"main": api})
+    await bridge.register_admin_commands("main")
+    api.call.assert_any_await(
+        "setChatMenuButton", {"chat_id": "2", "menu_button": {"type": "commands"}}
+    )

@@ -84,7 +84,8 @@ claim the connection with `focus`.
 
 Set both the bot's `admin: true` and the connection's `allow_admin: true` to enable
 `/new_session`, `/model [model]`, and `/thinking [level]`. Both flags default to
-`false`. Enabling a bot registers its command menu with Telegram. Bridges checks
+`false`. At startup Bridges registers the bot's command menu, chat-scoped commands
+for permitted connections, and the command menu button in private chats. Bridges checks
 both flags on every recognized command; denied commands never reach the model.
 Model and thinking queries list current settings and available choices.
 

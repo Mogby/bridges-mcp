@@ -25,8 +25,12 @@ can issue commands. In a group or forum topic, permission applies to everyone on
 that connection. Topic matching still applies before command handling.
 
 An admin-enabled bot registers `/new_session`, `/model`, and `/thinking` through
-`setMyCommands` when polling starts, replacing its default command menu. Other
-commands and bot-command scopes are outside this feature. Disabling admin blocks
+`setMyCommands` when polling starts, replacing its default command menu. It also
+registers chat-scoped commands for each connection with `allow_admin: true` and
+sets the command menu button in private chats. Chats shared by multiple topic
+connections are configured once; Telegram has no per-topic command menu. Execution
+still checks the specific connection's permission. A failed chat setup is logged
+without blocking other chats or incoming polling. Disabling admin blocks
 execution immediately after restart; Telegram may retain a previously registered
 menu. A menu entry never grants permission.
 
