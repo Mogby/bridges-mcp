@@ -18,6 +18,7 @@ class ToolSpec:
     properties: dict
     required: tuple = ()
     read_only: bool = False
+    destructive: bool = False
 
     def tool(self):
         return Tool(
@@ -30,7 +31,9 @@ class ToolSpec:
                 "additionalProperties": False,
             },
             annotations=ToolAnnotations(
-                readOnlyHint=self.read_only, destructiveHint=False, openWorldHint=not self.read_only
+                readOnlyHint=self.read_only,
+                destructiveHint=self.destructive,
+                openWorldHint=not self.read_only,
             ),
         )
 
@@ -86,6 +89,61 @@ TELEGRAM_TOOLS = [
 ]
 
 
+JOB_ID = {"id": {"type": "string", "minLength": 1, "description": "The assigned job ID."}}
+CRON_TOOLS = [
+    ToolSpec(
+        "add_job",
+        "Schedule a recurring prompt into a connection's agent session. The scheduler never posts the prompt to the external chat. Uses the configured cron timezone.",
+        {
+            "connection_id": {"type": "string", "minLength": 1},
+            "name": {"type": "string", "minLength": 1, "maxLength": 200},
+            "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "Five-field Unix cron: minute hour day month weekday. Sunday is 0/7; restricted day-of-month and weekday use OR.",
+            },
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 65536},
+        },
+        ("connection_id", "name", "pattern", "prompt"),
+    ),
+    ToolSpec(
+        "list_jobs",
+        "List id, name, pattern, and active/paused status without prompts.",
+        {
+            "connection_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Optional connection filter. Omit to list all accessible jobs.",
+            }
+        },
+        read_only=True,
+    ),
+    ToolSpec(
+        "get_job_prompt",
+        "Read the stored prompt for one scheduled job.",
+        JOB_ID,
+        ("id",),
+        read_only=True,
+    ),
+    ToolSpec(
+        "delete_job",
+        "Delete a scheduled job. Already submitted session input cannot be recalled.",
+        JOB_ID,
+        ("id",),
+        destructive=True,
+    ),
+    ToolSpec("pause_job", "Pause future firings of a scheduled job.", JOB_ID, ("id",)),
+    ToolSpec(
+        "resume_job",
+        "Resume a paused job at its next future occurrence, without a backlog.",
+        JOB_ID,
+        ("id",),
+    ),
+]
+CRON_NAMES = {spec.name for spec in CRON_TOOLS}
+
+
 class Registry:
     def __init__(self, config):
         self.config = config
@@ -97,7 +155,7 @@ class Registry:
             )
         ]
         if config.telegram.connections:
-            self.specs += TELEGRAM_TOOLS
+            self.specs += TELEGRAM_TOOLS + CRON_TOOLS
         self.by_name = {spec.name: spec for spec in self.specs}
 
     def docs(self, thread_id, sessions=None):
@@ -123,6 +181,15 @@ class Registry:
             "tools": list(self.by_name),
         }
         if self.config.telegram.connections:
+            docs["cron"] = {
+                "timezone": self.config.cron.timezone,
+                "tools": [spec.name for spec in CRON_TOOLS],
+                "routing": "Jobs bind to connection_id and inject prompts into its mapped session. The scheduler never posts prompts or typing indicators to the external chat.",
+                "patterns": "Five-field Unix cron; Sunday 0/7; restricted month-day and weekday use OR.",
+                "jobs": "list_jobs returns id/name/pattern/status only. get_job_prompt, delete_job, pause_job and resume_job accept only id. Status is active or paused.",
+                "persistence": "Jobs and pause state survive restarts in state_dir/cron.sqlite. Missed downtime/paused occurrences are skipped. Delivery is attempted once per claimed occurrence; it is not exactly-once agent execution.",
+                "metadata": "Cron envelopes use bridge=cron, an occurrence message_id, job_id, job_name, pattern, scheduled_at, and received_at. Original prompt follows the header unchanged.",
+            }
             docs["telegram"] = {
                 "connections": [
                     {

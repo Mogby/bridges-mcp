@@ -39,7 +39,7 @@ class AppServer:
             rpc = RPC(socket, on_event=self.event, on_disconnect=self.disconnected)
             try:
                 await rpc.request(
-                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.5.0"}}
+                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.6.0"}}
                 )
                 await rpc.send({"method": "initialized"})
             except BaseException:

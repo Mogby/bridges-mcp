@@ -21,3 +21,5 @@ telegram:
       session_id: personal
       allow_admin: false
 state_dir: /var/lib/bridges-mcp
+cron:
+  timezone: UTC

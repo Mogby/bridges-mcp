@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import (
@@ -85,8 +86,22 @@ class HTTP(Model):
     port: int = Field(default=8765, ge=1, le=65535)
 
 
+class Cron(Model):
+    timezone: str = "UTC"
+
+    @field_validator("timezone")
+    @classmethod
+    def known_timezone(cls, value):
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("Use a valid IANA scheduler timezone") from None
+        return value
+
+
 class Config(Model):
     http: HTTP = Field(default_factory=HTTP)
+    cron: Cron = Field(default_factory=Cron)
     clients: dict[str, Client] = Field(default_factory=dict)
     sessions: dict[str, Session] = Field(default_factory=dict)
     telegram: Telegram = Field(default_factory=Telegram)

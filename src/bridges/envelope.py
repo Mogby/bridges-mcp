@@ -14,6 +14,7 @@ class Inbound:
     connection_id: str
     text: str
     command: tuple[str, str] | None = None
+    source: str = "telegram"
 
 
 @dataclass

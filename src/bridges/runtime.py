@@ -7,9 +7,10 @@ from pathlib import Path
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, UnidentifiedImageError
 
+from .cron import Cron
 from .envelope import Handles
 from .errors import BridgeError
-from .registry import Registry
+from .registry import CRON_NAMES, Registry
 from .sessions import Sessions
 from .state import identity
 from .telegram import TelegramBridge
@@ -45,13 +46,20 @@ class Runtime:
         self.consumers = []
         self.ready = False
         self.worker = None
+        self.cron = (
+            Cron(config.state_path, config.cron.timezone, config.telegram.connections, self.enqueue)
+            if config.telegram.connections
+            else None
+        )
 
     def enqueue(self, envelope):
         try:
             self.queue.put_nowait(envelope)
             log.info("inbound_received connection_id=%s", envelope.connection_id)
+            return True
         except asyncio.QueueFull:
             log.warning("inbound_dropped reason=buffer_full")
+            return False
 
     async def start(self):
         # Startup never launches a harness or starts a model turn.
@@ -59,6 +67,8 @@ class Runtime:
         self.consumers = [asyncio.create_task(self.consume(name)) for name in self.session_queues]
         self.worker = asyncio.create_task(self.deliver_loop())
         await self.telegram.start()
+        if self.cron:
+            await self.cron.start()
 
     def protocol_docs(self, caller):
         return self.registry.docs(caller, self.sessions.records)
@@ -138,7 +148,7 @@ class Runtime:
                         await self.stop_replaced_typing(name, previous)
                     delivery = await session.deliver(envelope.text, self.sessions.options(name))
                     log.info("inbound_delivery outcome=%s code=%s", delivery.outcome, delivery.code)
-                    if delivery.outcome == "accepted":
+                    if delivery.outcome == "accepted" and envelope.source == "telegram":
                         client_id = self.config.sessions[name].client
                         await self.typing_for(client_id, session).start(
                             envelope.connection_id, delivery.turn_id
@@ -151,6 +161,38 @@ class Runtime:
                 queue.task_done()
                 self.queue.task_done()
 
+    def cron_call(self, name, arguments, client_id):
+        allowed = {
+            key
+            for key, connection in self.config.telegram.connections.items()
+            if self.config.sessions[connection.session_id].client == client_id
+        }
+        if name == "list_jobs" and "connection_id" not in arguments:
+            return {"jobs": self.cron.list(allowed)}
+        if name in {"add_job", "list_jobs"}:
+            connection_id, _ = self.telegram.connection(arguments["connection_id"])
+        else:
+            job = self.cron.get(arguments["id"])
+            connection_id = job.kwargs["connection_id"]
+        if connection_id not in allowed:
+            raise BridgeError(
+                "unauthorized", "The job's connection is not available to this client."
+            )
+        if name == "add_job":
+            return self.cron.add(
+                connection_id, arguments["name"], arguments["pattern"], arguments["prompt"]
+            )
+        if name == "list_jobs":
+            return {"jobs": self.cron.list({connection_id})}
+        if name == "get_job_prompt":
+            return {"prompt": job.kwargs["prompt"]}
+        action = {
+            "delete_job": self.cron.delete,
+            "pause_job": self.cron.pause,
+            "resume_job": self.cron.resume,
+        }[name]
+        return action(arguments["id"])
+
     async def call(self, name, arguments, meta, client_id=None):
         try:
             caller, _ = identity(meta)
@@ -162,6 +204,9 @@ class Runtime:
                 raise BridgeError("not_ready", "Bridges is starting.")
             if name == "get_protocol_docs":
                 return result(self.protocol_docs(caller))
+            if name in CRON_NAMES:
+                await self.session(client_id, caller)
+                return result(self.cron_call(name, arguments, client_id))
             connection_id, connection = self.telegram.connection(arguments.get("connection_id"))
             await self.session(client_id, caller)
             # Outbound destinations are explicit; shared sessions never broadcast.
@@ -230,6 +275,8 @@ class Runtime:
 
     async def close(self):
         self.ready = False
+        if self.cron:
+            await self.cron.close()
         if self.worker:
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)

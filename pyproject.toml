@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bridges-mcp"
-version = "0.5.0"
+version = "0.6.0"
 description = "Messaging MCP server with shared sessions and harness adapters"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -12,6 +12,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.30,<2", "httpx>=0.28,<1", "PyYAML>=6,<7", "Pillow>=11,<13",
+  "APScheduler>=3.11,<4", "SQLAlchemy>=2,<3", "croniter>=6,<7", "tzdata>=2024.1",
   "pydantic>=2.11,<3", "jsonschema>=4.20,<5", "uvicorn>=0.31,<1", "starlette>=0.46,<2", "websockets>=15,<17",
 ]
 

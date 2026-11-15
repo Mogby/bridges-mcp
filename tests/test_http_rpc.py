@@ -47,7 +47,7 @@ async def test_http_auth_focus_and_host_identity(runtime):
         listed = (await client.post("/mcp", json=message, headers=headers)).json()["result"][
             "tools"
         ]
-        assert len(listed) == 6
+        assert len(listed) == 12
         assert "focus" not in {tool["name"] for tool in listed}
 
         async def call(name, args, meta):
@@ -76,6 +76,29 @@ async def test_http_auth_focus_and_host_identity(runtime):
         docs = await call("get_protocol_docs", {}, {"threadId": "chat"})
         assert docs["structuredContent"]["sessions"]["shared"]["thread_id"] == "chat"
         assert "focus" not in docs["structuredContent"]["tools"]
+
+        created = await call(
+            "add_job",
+            {
+                "connection_id": "one",
+                "name": "test",
+                "pattern": "0 0 1 1 *",
+                "prompt": "private prompt",
+            },
+            {"threadId": "chat"},
+        )
+        job_id = created["structuredContent"]["id"]
+        listed = await call("list_jobs", {}, {"threadId": "chat"})
+        assert set(listed["structuredContent"]["jobs"][0]) == {"id", "name", "pattern", "status"}
+        assert (
+            await call(
+                "get_job_prompt", {"id": job_id, "connection_id": "one"}, {"threadId": "chat"}
+            )
+        )["isError"]
+        assert (await call("get_job_prompt", {"id": job_id}, {"threadId": "chat"}))[
+            "structuredContent"
+        ] == {"prompt": "private prompt"}
+        assert not (await call("delete_job", {"id": job_id}, {"threadId": "chat"}))["isError"]
 
 
 async def test_websocket_rpc_multiplexing_and_disconnect(socket_path):

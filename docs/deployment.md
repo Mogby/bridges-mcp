@@ -60,7 +60,7 @@ conversation history. There is no `reset-focus` command.
 ## Storage layout
 
 All state belongs directly to the configured `state_dir`: `sessions.json`,
-`downloads/`, and `server.lock`. Separate processes use separate state directories
+`downloads/`, `cron.sqlite`, and `server.lock`. Separate processes use separate state directories
 and HTTP ports. Downloads always use `<state_dir>/downloads`.
 
 When upgrading a nested state layout, stop Bridges, move the chosen
@@ -70,3 +70,12 @@ existing downloads into `state_dir/downloads`, then remove the obsolete
 `instance_id` and `download_dir` configuration fields. Preserve all session
 pointers and settings. Restart after migration; unmigrated nested session files
 are detected instead of being silently treated as an empty installation.
+
+## Scheduler storage
+
+No external scheduler service is required. Set `cron.timezone` to an IANA timezone;
+the default is `UTC`. Back up `cron.sqlite` while Bridges is stopped, together with
+configuration and `sessions.json`. It contains prompts and trusted serialized job
+records: restrict access and never load an untrusted database. One process owns
+each state directory. Startup preserves job IDs and paused status, applies the
+configured timezone, and advances active jobs past downtime.

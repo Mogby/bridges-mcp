@@ -90,7 +90,7 @@ acknowledgement or interrupted final save. Inspect backend state before explicit
 using `/new_session` to recover uncertain creation. Corrupt state fails startup.
 
 Telegram is the implemented messaging transport. Additional transports can route
-through the same session manager; Discord and cron adapters are not included.
+through the same session manager. Scheduled prompts use the cron bridge below.
 
 ## Admin commands
 
@@ -111,7 +111,8 @@ menu buttons.
 
 With Telegram connections configured, the server exposes `get_protocol_docs`,
 `telegram_send_text`, `telegram_send_images`, `telegram_send_file`,
-`telegram_download_images`, and `telegram_download_file`. There is no agent-controlled
+`telegram_download_images`, and `telegram_download_file`, plus `add_job`,
+`list_jobs`, `get_job_prompt`, `delete_job`, `pause_job`, and `resume_job`. There is no agent-controlled
 `focus` or session-management MCP tool.
 
 Bearer authentication selects the backend. Host metadata identifies the calling
@@ -132,3 +133,17 @@ Typing starts automatically after accepted incoming delivery and stops when the
 owning turn completes, changes, disconnects, or its shared session is replaced.
 Slow typing requests do not block delivery. Bridges preserves backend approval/input
 policy and never answers approval requests on the user's behalf.
+
+## Scheduled prompts
+
+APScheduler 3 runs persistent jobs using SQLite and five-field Unix cron expressions.
+Jobs belong to a connection and submit prompts to its current session, including
+normal automatic creation and stale-pointer recovery. They do not post the prompt
+to external chat or trigger typing indicators.
+
+`add_job(connection_id, name, pattern, prompt)` returns an assigned `id`.
+`list_jobs(connection_id?)` returns only `id`, `name`, `pattern`, and `status`
+(`active` or `paused`). The remaining four scheduling tools accept only `id`.
+
+Set `cron.timezone` to an IANA timezone; default `UTC`. Missed occurrences while
+stopped or paused are skipped. See [cron behavior](docs/cron.md).
