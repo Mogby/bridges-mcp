@@ -8,7 +8,7 @@ Coverage includes shared automatic creation, first-message preservation without
 initialization prompts, deleted-pointer replacement, persisted settings, uncertain
 creation write-ahead markers, persistence failures, independent-session scheduling,
 shared `/new_session`, both admin permission flags, strict session/backend references,
-and six-tool MCP discovery with no focus API.
+and MCP discovery with Telegram and scheduler tools but no focus API.
 
 Existing lifecycle tests verify typing ownership, slow requests, completion and
 replacement, stale acknowledgements, disconnections, active steering, idle turn
@@ -23,5 +23,10 @@ The installed-server integration checks empty thread creation without a model tu
 loaded session access, model catalogs, and specific missing-thread classification.
 Closing a Bridges client must leave the independently owned server process alive.
 
-No Discord/cron adapters, durable inbox, transcription, distributed locking, or
+Context tests cover last-request versus cumulative token counts, unavailable limits,
+thread/backend isolation, compaction start/completion and replay, restart persistence,
+disconnect freshness, storage failures, MarkdownV2 preservation, long messages, and
+`/context` authorization without model work.
+
+No Discord adapter, durable inbox, transcription, distributed locking, or
 interactive approval UI are included. Existing harness approval policy is preserved.

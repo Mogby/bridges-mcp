@@ -21,6 +21,7 @@ class AppServer:
         self.connect_lock = asyncio.Lock()
         self.session_lock = asyncio.Lock()
         self.monitor = None
+        self.context_tracker = None
 
     async def connect(self):
         async with self.connect_lock:
@@ -39,7 +40,7 @@ class AppServer:
             rpc = RPC(socket, on_event=self.event, on_disconnect=self.disconnected)
             try:
                 await rpc.request(
-                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.6.0"}}
+                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.7.0"}}
                 )
                 await rpc.send({"method": "initialized"})
             except BaseException:
@@ -146,11 +147,29 @@ class AppServer:
         raise BridgeError("invalid_payload", "Codex model catalog pagination exceeded its limit.")
 
     def disconnected(self):
+        if self.context_tracker:
+            self.context_tracker.disconnect()
         for session in self.sessions.values():
             session.disconnected()
 
     def event(self, message):
-        session = self.sessions.get(message.get("params", {}).get("threadId"))
+        params = message.get("params", {})
+        thread_id = params.get("threadId")
+        if self.context_tracker and isinstance(thread_id, str) and thread_id:
+            method = message.get("method")
+            if method == "thread/tokenUsage/updated":
+                usage = params.get("tokenUsage")
+                if isinstance(usage, dict) and isinstance(usage.get("last"), dict):
+                    self.context_tracker.usage(
+                        thread_id, usage["last"].get("totalTokens"), usage.get("modelContextWindow")
+                    )
+            elif method in {"item/started", "item/completed"}:
+                item = params.get("item")
+                if isinstance(item, dict) and item.get("type") == "contextCompaction":
+                    self.context_tracker.compaction(
+                        thread_id, item.get("id"), completed=method == "item/completed"
+                    )
+        session = self.sessions.get(thread_id)
         if session:
             session.event(message)
 

@@ -7,13 +7,14 @@ from pathlib import Path
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, UnidentifiedImageError
 
+from .context import ContextStore, escape_markdown
 from .cron import Cron
 from .envelope import Handles
 from .errors import BridgeError
 from .registry import CRON_NAMES, Registry
 from .sessions import Sessions
 from .state import identity
-from .telegram import TelegramBridge
+from .telegram import TelegramBridge, validate_text
 from .transports import build_backend
 from .typing import TypingManager
 
@@ -40,6 +41,9 @@ class Runtime:
             if backends is not None
             else {name: build_backend(client) for name, client in config.clients.items()}
         )
+        self.context = ContextStore(config.state_path / "context.sqlite")
+        for name, backend in self.backends.items():
+            backend.context_tracker = self.context.tracker(name)
         self.sessions = Sessions(config, state, self.backends)
         self.typing = {}
         self.session_queues = {name: asyncio.Queue(config.buffer_size) for name in config.sessions}
@@ -100,7 +104,15 @@ class Runtime:
         if bot.admin and connection.allow_admin:
             command, argument = envelope.command
             try:
-                if command == "new_session":
+                if command == "context":
+                    if argument:
+                        message = "Usage: /context"
+                    else:
+                        record = self.sessions.record(connection.session_id)
+                        configured = self.config.sessions[connection.session_id]
+                        # A status request must not create a thread or start a model turn.
+                        message = self.context.display(configured.client, record["thread_id"])
+                elif command == "new_session":
                     if argument:
                         message = "Usage: /new_session"
                     else:
@@ -211,7 +223,15 @@ class Runtime:
             await self.session(client_id, caller)
             # Outbound destinations are explicit; shared sessions never broadcast.
             if name == "telegram_send_text":
-                data = await self.telegram.send_text(connection, arguments["text"])
+                text = arguments["text"]
+                validate_text(text, 4096, "text")
+                footer = escape_markdown(self.context.display(client_id, caller))
+                with_footer = text + "\n\n" + footer
+                # Preserve valid caller content and Telegram's existing 4096-character limit.
+                omitted = len(with_footer) > 4096
+                data = await self.telegram.send_text(connection, text if omitted else with_footer)
+                if omitted:
+                    data["context_footer_omitted"] = True
             elif name == "telegram_send_file":
                 data = await self.telegram.send_file(
                     connection, arguments["path"], arguments.get("caption", "")
@@ -288,3 +308,4 @@ class Runtime:
         await self.telegram.close()
         for backend in self.backends.values():
             await backend.close()
+        self.context.close()

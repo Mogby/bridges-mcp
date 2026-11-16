@@ -60,7 +60,7 @@ conversation history. There is no `reset-focus` command.
 ## Storage layout
 
 All state belongs directly to the configured `state_dir`: `sessions.json`,
-`downloads/`, `cron.sqlite`, and `server.lock`. Separate processes use separate state directories
+`downloads/`, `cron.sqlite`, `context.sqlite`, and `server.lock`. Separate processes use separate state directories
 and HTTP ports. Downloads always use `<state_dir>/downloads`.
 
 When upgrading a nested state layout, stop Bridges, move the chosen
@@ -79,3 +79,12 @@ configuration and `sessions.json`. It contains prompts and trusted serialized jo
 records: restrict access and never load an untrusted database. One process owns
 each state directory. Startup preserves job IDs and paused status, applies the
 configured timezone, and advances active jobs past downtime.
+
+## Context tracking storage
+
+`context.sqlite` stores last-reported usage and deduplicated completed compaction
+item IDs, keyed by backend and thread. Back it up while Bridges is stopped. The
+file is created automatically with mode `0600`; it contains counters and timestamps,
+not conversation content. Deleting it loses observed counts and cached usage but
+does not affect session routing or backend history. Cached readings become stale
+on restart. See [[context|Context usage]] for display and coverage limits.

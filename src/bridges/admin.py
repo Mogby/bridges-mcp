@@ -3,6 +3,7 @@
 import re
 
 COMMANDS = [
+    {"command": "context", "description": "Show context usage and observed compactions"},
     {"command": "new_session", "description": "Start a new session"},
     {"command": "model", "description": "Show or change the current session model"},
     {"command": "thinking", "description": "Show or change the current thinking level"},

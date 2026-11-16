@@ -17,6 +17,8 @@ must match the bot username when known. Captions, quoted text, and model output
 cannot invoke the admin channel. Recognized denied/unavailable commands are consumed
 and never become agent prompts. `/new` is not an alias.
 
+- `/context`: no arguments. Shows the cached [context usage](context.md) and observed
+  compaction count without loading a thread or starting a model turn.
 - `/new_session`: no arguments. Creates an empty thread, saves its pointer for the
   entire logical session, and leaves old history intact. No initialization turn.
 - `/model`: current shared model and available choices. `/model <model>` saves a valid

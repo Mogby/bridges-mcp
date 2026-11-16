@@ -97,6 +97,7 @@ through the same session manager. Scheduled prompts use the cron bridge below.
 Both bot `admin` and connection `allow_admin` must be true; both default to false.
 Recognized commands are handled by Bridges and never become model prompts.
 
+- `/context`: show the last reported context usage and observed compaction count.
 - `/new_session`: create an empty conversation and replace the shared pointer for
   every connection in the logical session. Previous history remains saved.
 - `/model [model]`: show choices/current model or save a model for the shared session.
@@ -125,8 +126,10 @@ Replies include `reply_to_message_id`. Attachments use bounded, connection-scope
 ephemeral handles. Audio is not transcribed. File paths are local to the bridge host.
 
 Ordinary assistant prose is not forwarded to Telegram: use send tools and select
-the originating connection. Outgoing text/captions use MarkdownV2 unchanged. Escape
-literal punctuation according to Telegram's rules. Uncertain sends are not retried;
+the originating connection. Caller text/captions keep their MarkdownV2 formatting.
+Escape literal punctuation according to Telegram's rules. Bridges appends a context
+usage footer to text messages when it fits. See [context usage](docs/context.md) for
+freshness, compaction counting, and length limits. Uncertain sends are not retried;
 partial image batches report completed IDs and the failed index.
 
 Typing starts automatically after accepted incoming delivery and stops when the
