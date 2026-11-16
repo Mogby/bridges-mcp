@@ -127,8 +127,8 @@ ephemeral handles. Audio is not transcribed. File paths are local to the bridge 
 
 Ordinary assistant prose is not forwarded to Telegram: use send tools and select
 the originating connection. Caller text/captions keep their MarkdownV2 formatting.
-Escape literal punctuation according to Telegram's rules. Bridges appends a context
-usage footer to text messages when it fits. See [context usage](docs/context.md) for
+Escape literal punctuation according to Telegram's rules. Context usage appears only
+when requested with `/context`. See [context usage](docs/context.md) for
 freshness, compaction counting, and length limits. Uncertain sends are not retried;
 partial image batches report completed IDs and the failed index.
 

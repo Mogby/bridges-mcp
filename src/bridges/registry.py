@@ -58,7 +58,7 @@ STRINGS = {"type": "array", "items": STRING, "minItems": 1, "maxItems": 100}
 TELEGRAM_TOOLS = [
     ToolSpec(
         "telegram_send_text",
-        "Send Telegram MarkdownV2 text to a configured conversation. Bridges adds a last-reported context footer when it fits. Escape literal punctuation; see the text parameter for formatting rules.",
+        "Send Telegram MarkdownV2 text to a configured conversation. Escape literal punctuation; see the text parameter for formatting rules.",
         {**CONNECTION, "text": MARKDOWN_STRING},
         ("text",),
     ),
@@ -204,7 +204,7 @@ class Registry:
                 "formatting": MARKDOWN_V2,
                 "attachments": f"Handles expire after {self.config.attachment_ttl_seconds} seconds, eviction, or restart. Download paths are local to the bridge host. Audio is not transcribed.",
                 "typing": "Bridges automatically starts typing when an incoming message is accepted into the mapped session and refreshes about every four seconds for that turn. Completion, failure, interruption, replacement, session replacement, loss of lifecycle, or shutdown stops refreshes. Agents do not manage typing. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",
-                "context": "Text sends append last-reported context usage and observed compactions when the footer fits the 4096-character limit. Otherwise the original text is sent with context_footer_omitted=true. Use /context for cached usage without a model turn. Missing readings are unavailable; restart/disconnect/compaction can mark readings stale. Counts cover observed completed compactions since tracking began, not guaranteed lifetime totals.",
+                "context": "Use /context for cached context usage and observed compactions without a model turn. Ordinary messages do not include context usage. Missing readings are unavailable; restart/disconnect/compaction can mark readings stale. Counts cover observed completed compactions since tracking began, not guaranteed lifetime totals.",
                 "errors": "Tool failures use isError and a machine-readable code. Never blindly retry delivery_unknown or a partially sent batch. Inspect completed_message_ids and failed_index.",
             }
         return docs

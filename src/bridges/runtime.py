@@ -7,7 +7,7 @@ from pathlib import Path
 from mcp.types import CallToolResult, ImageContent, TextContent
 from PIL import Image, UnidentifiedImageError
 
-from .context import ContextStore, escape_markdown
+from .context import ContextStore
 from .cron import Cron
 from .envelope import Handles
 from .errors import BridgeError
@@ -225,13 +225,7 @@ class Runtime:
             if name == "telegram_send_text":
                 text = arguments["text"]
                 validate_text(text, 4096, "text")
-                footer = escape_markdown(self.context.display(client_id, caller))
-                with_footer = text + "\n\n" + footer
-                # Preserve valid caller content and Telegram's existing 4096-character limit.
-                omitted = len(with_footer) > 4096
-                data = await self.telegram.send_text(connection, text if omitted else with_footer)
-                if omitted:
-                    data["context_footer_omitted"] = True
+                data = await self.telegram.send_text(connection, text)
             elif name == "telegram_send_file":
                 data = await self.telegram.send_file(
                     connection, arguments["path"], arguments.get("caption", "")

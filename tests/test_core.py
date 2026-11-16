@@ -6,7 +6,6 @@ import yaml
 from pydantic import ValidationError
 
 from bridges.config import Config, load_config
-from bridges.context import escape_markdown
 from bridges.envelope import Attachment, Handles, Inbound, normalize
 from bridges.errors import BridgeError
 from bridges.registry import Registry
@@ -199,7 +198,7 @@ async def test_startup_and_authenticated_caller(runtime):
     assert runtime.telegram.clients["main"].call.call_args.args[1] == {
         "chat_id": "2",
         "message_thread_id": 42,
-        "text": "hello\n\n" + escape_markdown(runtime.context.display("app", "chat")),
+        "text": "hello",
         "parse_mode": "MarkdownV2",
     }
 

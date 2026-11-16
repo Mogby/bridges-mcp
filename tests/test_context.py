@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bridges.context import ContextStore, escape_markdown
+from bridges.context import ContextStore
 from bridges.envelope import Inbound
 from bridges.transports.app_server import AppServer
 
@@ -116,7 +116,7 @@ def test_storage_failure_does_not_break_protocol_events(store):
     tracker.usage("chat", 100, 200)
 
 
-async def test_text_footer_preserves_markdown_and_isolates_caller(runtime):
+async def test_text_send_preserves_markdown_without_context_usage(runtime):
     await runtime.start()
     runtime.context.tracker("app").usage("chat", 80000, 100000)
     runtime.context.tracker("app").usage("other", 1, 100)
@@ -129,15 +129,12 @@ async def test_text_footer_preserves_markdown_and_isolates_caller(runtime):
     )
     assert not result.isError
     call = runtime.telegram.clients["main"].call.call_args
-    assert call.args[1]["text"] == original + "\n\n" + escape_markdown(
-        runtime.context.display("app", "chat")
-    )
-    assert r"80% \(80,000/100,000 tokens\)\." in call.args[1]["text"]
+    assert call.args[1]["text"] == original
     assert call.args[1]["message_thread_id"] == 42
     assert call.args[1]["parse_mode"] == "MarkdownV2"
 
 
-async def test_near_limit_omits_footer_without_second_send(runtime):
+async def test_text_limit_validation_without_second_send(runtime):
     await runtime.start()
     api = runtime.telegram.clients["main"]
     api.call.reset_mock()
@@ -147,7 +144,7 @@ async def test_near_limit_omits_footer_without_second_send(runtime):
         {"threadId": "chat"},
         "app",
     )
-    assert result.structuredContent == {"message_id": 7, "context_footer_omitted": True}
+    assert result.structuredContent == {"message_id": 7}
     assert api.call.await_count == 1
     assert api.call.call_args.args[1]["text"] == "a" * 4096
     for invalid in ["", "x" * 4097, None]:
