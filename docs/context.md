@@ -3,7 +3,9 @@
 The `/context` command shows cached context usage and observed compactions:
 
 ```text
-Context usage: 80% (80,000/100,000 tokens). Last reported. 2 compactions observed since tracking began.
+Context usage: 80% (80,000/100,000 tokens).
+2 compactions observed since tracking began.
+Last reported at 2026-11-16T00:20:38+00:00
 ```
 
 The command does not start a model request. It uses the normal admin permissions
@@ -23,7 +25,10 @@ limits never produce a guessed percentage.
 `/context` takes a snapshot when the command runs. It reports unavailable before
 the first usable sample and labels persisted readings stale after a process restart
 or backend disconnect. During and immediately after compaction, the previous
-reading stays stale until a new usage event arrives.
+reading stays stale until a new usage event arrives. The timestamp is the stored
+UTC ISO time of the usage observation, not the time of the command. Stale readings
+append `(Stale: awaiting update.)` to the timestamp line. If no sample exists,
+the display reports unavailable and omits the timestamp line.
 
 Thread read/resume metadata does not contain a usage snapshot. A restarted bridge
 can show unavailable or stale information until normal incoming delivery resumes

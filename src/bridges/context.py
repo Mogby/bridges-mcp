@@ -48,7 +48,7 @@ class ContextStore:
 
     def display(self, client, thread):
         if self.failed:
-            return "Context usage: unavailable. Compaction tracking unavailable."
+            return "Context usage: unavailable.\nCompaction tracking unavailable."
         try:
             row = self.db.execute(
                 "SELECT used, window, reported_at FROM context_usage WHERE client=? AND thread=?",
@@ -60,7 +60,8 @@ class ContextStore:
             ).fetchone()[0]
         except sqlite3.Error:
             self.failure()
-            return "Context usage: unavailable. Compaction tracking unavailable."
+            return "Context usage: unavailable.\nCompaction tracking unavailable."
+        reported = None
         if row is None or row[0] is None:
             usage = "Context usage: unavailable (awaiting usage update)."
         else:
@@ -70,12 +71,14 @@ class ContextStore:
             else:
                 percent = (used * 100 + window // 2) // window
                 usage = f"Context usage: {percent}% ({used:,}/{window:,} tokens)."
-            if (client, thread) in self.fresh:
-                usage += " Last reported."
-            else:
-                usage += f" Stale: last reported {reported_at}; awaiting update."
+            reported = f"Last reported at {reported_at}"
+            if (client, thread) not in self.fresh:
+                reported += " (Stale: awaiting update.)"
         noun = "compaction" if count == 1 else "compactions"
-        return f"{usage} {count:,} {noun} observed since tracking began."
+        lines = [usage, f"{count:,} {noun} observed since tracking began."]
+        if reported is not None:
+            lines.append(reported)
+        return "\n".join(lines)
 
     def failure(self):
         self.failed = True

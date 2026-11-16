@@ -19,10 +19,20 @@ def store(tmp_path):
 def test_last_reported_usage_and_unknown_limit(store):
     tracker = store.tracker("app")
     tracker.usage("chat", 80000, 100000)
+    timestamp = "2026-11-16T00:20:38+00:00"
+    with store.db:
+        store.db.execute("UPDATE context_usage SET reported_at=?", (timestamp,))
     assert store.display("app", "chat") == (
-        "Context usage: 80% (80,000/100,000 tokens). Last reported. "
-        "0 compactions observed since tracking began."
+        "Context usage: 80% (80,000/100,000 tokens).\n"
+        "0 compactions observed since tracking began.\n"
+        f"Last reported at {timestamp}"
     )
+    tracker.disconnect()
+    assert store.display("app", "chat").splitlines() == [
+        "Context usage: 80% (80,000/100,000 tokens).",
+        "0 compactions observed since tracking began.",
+        f"Last reported at {timestamp} (Stale: awaiting update.)",
+    ]
     tracker.usage("chat", 123, None)
     assert "limit unavailable" in store.display("app", "chat")
     for bad in [0, -1, False, "100", 1.5, 1 << 64]:
