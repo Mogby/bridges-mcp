@@ -26,6 +26,10 @@ caller authorization, uncertain acknowledgement handling, and UTF-16 quote metad
 without changing the new message body. Mocked delivery does not prove that Telegram
 will supply private-chat reaction updates.
 
+Group bot-message tests cover sender metadata, sender_chat precedence, a finite
+allowance after human input, human-only resets, expiry, bounded guard state,
+own-bot filtering, bot-authored admin command bypass, and normal group delivery.
+
 The installed-server integration checks empty thread creation without a model turn,
 loaded session access, model catalogs, and specific missing-thread classification.
 Closing a Bridges client must leave the independently owned server process alive.

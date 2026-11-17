@@ -4,6 +4,39 @@ Telegram connections route to the configured sessions. Normal messages retain th
 original text or caption after the fenced `bridge_context` metadata. The enabled
 tool schemas and `get_protocol_docs` describe the connected deployment.
 
+## Sender identity and group bot messages
+
+Ordinary message envelopes include `sender` when Telegram supplies a valid
+identity: `type` (`user` or `chat`), `id`, optional `username`, and `is_bot` for
+user identities when available. A `sender_chat` identity takes precedence over
+the anonymous proxy in `from`. Forwarded origins do not replace the actual sender.
+Missing identities or bot flags are not inferred.
+
+Telegram's Bot-to-Bot Communication Mode can expose other bots' group messages.
+Bridges ignores its own bot identity and bounds peer-bot input in groups and
+supergroups. Each configured connection permits at most four bot-authored
+messages during the five minutes after its most recently received non-bot human
+message. The allowance starts closed and is reset only by another human message.
+Bot messages, unknown senders, and `sender_chat` messages cannot reset or extend
+it. This is a total allowance per connection, not four for every sending bot.
+
+The guard stores only deadlines and counts, bounded to 8192 connections in memory.
+Restart or eviction closes the affected allowance until a human speaks again.
+It does not archive message content. Normal human and private-chat delivery is
+unchanged, except that own-bot messages are ignored everywhere. Bot-authored
+messages never execute Telegram admin commands, even when the connection permits
+human admin commands. Accepted peer messages still enter the normal session queue.
+
+An anonymous group administrator may appear through `sender_chat` with Telegram's
+`GroupAnonymousBot` proxy in `from`. Bridges does not infer a human identity behind
+that proxy. Its slash command remains ordinary message text and does not execute
+an admin control or reset the bot allowance. Use a named human sender for controls.
+
+This guard ensures a finite exchange between human inputs; it can drop later
+parts of a long bot response. It is not a background autonomous conversation
+service. Agents should use sender metadata to distinguish bot requests from the
+user's instructions and avoid replying to acknowledgements without useful work.
+
 ## Reply quotes
 
 When Telegram supplies a selected reply quote, Bridges forwards `quote` in the

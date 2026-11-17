@@ -4,6 +4,7 @@ import asyncio
 import logging
 import mimetypes
 import secrets
+import time
 from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
@@ -13,11 +14,41 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 
 from .admin import COMMANDS, command_from
-from .envelope import MessageRoutes, normalize, positive_id, reaction_types
+from .envelope import MessageRoutes, normalize, positive_id, reaction_types, sender_metadata
 from .errors import BridgeError
 
 log = logging.getLogger(__name__)
 DOWNLOAD_LIMIT = 20 * 1024 * 1024
+
+
+class BotMessageGate:
+    """Allow finite group bot input only after a recent human message."""
+
+    def __init__(self, limit=8192, allowance=4, window=300, clock=time.monotonic):
+        self.limit, self.allowance, self.window, self.clock = limit, allowance, window, clock
+        self.entries = OrderedDict()
+
+    def accept(self, connection_id, message, own_bot_id=None):
+        sender = sender_metadata(message)
+        if sender and sender["type"] == "user" and sender["id"] == own_bot_id:
+            return False
+        if message.get("chat", {}).get("type") not in {"group", "supergroup"}:
+            return True
+        # Anonymous sender_chat identities and missing sender flags are not
+        # evidence of a human input and cannot replenish the bot allowance.
+        if not sender or sender["type"] != "user" or "is_bot" not in sender:
+            return True
+        if sender["is_bot"] is False:
+            self.entries[connection_id] = (self.clock() + self.window, 0)
+            self.entries.move_to_end(connection_id)
+            while len(self.entries) > self.limit:
+                self.entries.popitem(last=False)
+            return True
+        entry = self.entries.get(connection_id)
+        if entry is None or entry[0] <= self.clock() or entry[1] >= self.allowance:
+            return False
+        self.entries[connection_id] = (entry[0], entry[1] + 1)
+        return True
 
 
 class TelegramAPI:
@@ -154,6 +185,12 @@ class TelegramBridge:
         self.tasks = []
         self.usernames = {}
         self.message_routes = MessageRoutes()
+        self.bot_message_gate = BotMessageGate()
+        self.bot_ids = {
+            name: int(token.split(":", 1)[0])
+            for name, token in tokens.items()
+            if token.split(":", 1)[0].isdigit()
+        }
 
     def connection(self, name=None):
         connections = self.config.telegram.connections
@@ -176,6 +213,8 @@ class TelegramBridge:
         api = self.clients[bot]
         identity = await api.call("getMe")
         self.usernames[bot] = identity["username"]
+        if positive_id(identity.get("id")):
+            self.bot_ids[bot] = identity["id"]
         await api.call("setMyCommands", {"commands": COMMANDS})
         # Telegram scopes and private-chat menu buttons belong to the chat,
         # not an individual forum topic. Configure each permitted chat once.
@@ -254,12 +293,18 @@ class TelegramBridge:
                         )
                         if envelope:
                             if isinstance(update.get("message"), dict):
-                                envelope = replace(
-                                    envelope,
-                                    command=command_from(
-                                        update["message"], self.usernames.get(bot)
-                                    ),
-                                )
+                                message = update["message"]
+                                if not self.bot_message_gate.accept(
+                                    envelope.connection_id, message, self.bot_ids.get(bot)
+                                ):
+                                    log.info("telegram_update_dropped reason=bot_message_gate")
+                                    continue
+                                sender = message.get("from")
+                                if not isinstance(sender, dict) or sender.get("is_bot") is not True:
+                                    envelope = replace(
+                                        envelope,
+                                        command=command_from(message, self.usernames.get(bot)),
+                                    )
                             self.enqueue(envelope)
                     except (KeyError, TypeError, ValueError):
                         log.warning("telegram_update_dropped reason=invalid_payload")

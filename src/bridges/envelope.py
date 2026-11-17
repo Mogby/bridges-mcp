@@ -65,6 +65,30 @@ def positive_id(value):
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def sender_metadata(message):
+    """Use Telegram's actual sender, not a forwarded origin or anonymous proxy."""
+    if "sender_chat" in message:
+        sender = message["sender_chat"]
+        kind = "chat"
+    else:
+        sender = message.get("from")
+        kind = "user"
+    if (
+        not isinstance(sender, dict)
+        or not isinstance(sender.get("id"), int)
+        or isinstance(sender["id"], bool)
+        or sender["id"] == 0
+        or (kind == "user" and sender["id"] < 0)
+    ):
+        return None
+    result = {"type": kind, "id": sender["id"]}
+    if kind == "user" and isinstance(sender.get("is_bot"), bool):
+        result["is_bot"] = sender["is_bot"]
+    if isinstance(sender.get("username"), str):
+        result["username"] = sender["username"]
+    return result
+
+
 class MessageRoutes:
     """Bounded routing metadata only; no message content or history lookup."""
 
@@ -254,6 +278,9 @@ def normalize(update, bot, connections, handles, now=None, routes=None):
         "message_id": message["message_id"],
         "received_at": received_at(now),
     }
+    sender = sender_metadata(message)
+    if sender is not None:
+        header["sender"] = sender
     reply = message.get("reply_to_message")
     if isinstance(reply, dict) and "message_id" in reply:
         header["reply_to_message_id"] = reply["message_id"]
