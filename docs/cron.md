@@ -17,7 +17,9 @@ not post the prompt to external chat; the agent may use messaging tools if asked
 ```
 
 IDs are server assigned. Names and prompts must be nonempty, up to 200 and 65,536
-characters respectively. Listing returns only `id`, `name`, `pattern`, and `status`
+characters respectively. `add_job` accepts an optional IANA `timezone`, such as
+`Asia/Tokyo`, to interpret that job’s expression in its own local time. Listing
+returns only `id`, `name`, `pattern`, effective `timezone`, and `status`
 (`active` or `paused`). Omit its filter to include all connections available to the
 authenticated backend. Job access requires access to the connection's backend.
 
@@ -33,9 +35,19 @@ cron:
   timezone: Europe/Berlin
 ```
 
-Default timezone: UTC. Local schedules follow daylight-saving changes: missing
-local times may shift forward and repeated times may occur twice. Use UTC for a
-fixed UTC schedule. Changing timezone applies to stored jobs on restart.
+The configured timezone defaults to UTC and is independent of the system timezone.
+Jobs without a `timezone` override inherit it, including existing jobs after an upgrade.
+Changing `cron.timezone` applies to those jobs on restart. Explicit per-job zones remain
+fixed across restarts and changes to the configured default. Invalid zone names are
+rejected without creating a job.
+
+For example, `0 9 * * *` with `timezone: Asia/Tokyo` runs at 09:00 in Tokyo, while
+the same expression with `timezone: America/New_York` runs at 09:00 in New York.
+
+Local schedules follow daylight-saving changes: missing local times may shift
+forward and repeated times may occur twice. With the current croniter behavior,
+Berlin `30 2 * * *` runs at 03:00 on the spring transition and at both occurrences
+of 02:30 on the autumn transition. Use UTC for a fixed UTC schedule.
 
 Paused jobs and downtime produce no catch-up backlog. During a running process,
 late occurrences coalesce to the latest one, with up to 60 seconds of lateness.
@@ -52,6 +64,6 @@ are not automatically retried. This is an at-most-once dispatch attempt, not a
 guarantee of exactly-once agent execution or successful completion.
 
 Scheduled input carries fenced YAML `bridge_context` with `bridge: cron`, connection
-ID, job ID/name, pattern, UTC scheduled time, and stable occurrence message ID. The
-original prompt follows unchanged. A leading slash does not invoke Telegram admin
+ID, job ID/name, pattern, effective timezone, UTC scheduled time, and stable occurrence
+message ID. The original prompt follows unchanged. A leading slash does not invoke Telegram admin
 commands. Jobs and paused status survive restarts; no external scheduler is needed.

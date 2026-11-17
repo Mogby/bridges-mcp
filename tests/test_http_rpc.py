@@ -84,12 +84,20 @@ async def test_http_auth_focus_and_host_identity(runtime):
                 "name": "test",
                 "pattern": "0 0 1 1 *",
                 "prompt": "private prompt",
+                "timezone": "Asia/Tokyo",
             },
             {"threadId": "chat"},
         )
         job_id = created["structuredContent"]["id"]
         listed = await call("list_jobs", {}, {"threadId": "chat"})
-        assert set(listed["structuredContent"]["jobs"][0]) == {"id", "name", "pattern", "status"}
+        assert listed["structuredContent"]["jobs"][0]["timezone"] == "Asia/Tokyo"
+        assert set(listed["structuredContent"]["jobs"][0]) == {
+            "id",
+            "name",
+            "pattern",
+            "timezone",
+            "status",
+        }
         assert (
             await call(
                 "get_job_prompt", {"id": job_id, "connection_id": "one"}, {"threadId": "chat"}

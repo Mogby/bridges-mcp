@@ -192,7 +192,11 @@ class Runtime:
             )
         if name == "add_job":
             return self.cron.add(
-                connection_id, arguments["name"], arguments["pattern"], arguments["prompt"]
+                connection_id,
+                arguments["name"],
+                arguments["pattern"],
+                arguments["prompt"],
+                timezone=arguments.get("timezone"),
             )
         if name == "list_jobs":
             return {"jobs": self.cron.list({connection_id})}

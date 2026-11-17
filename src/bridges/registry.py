@@ -93,7 +93,7 @@ JOB_ID = {"id": {"type": "string", "minLength": 1, "description": "The assigned 
 CRON_TOOLS = [
     ToolSpec(
         "add_job",
-        "Schedule a recurring prompt into a connection's agent session. The scheduler never posts the prompt to the external chat. Uses the configured cron timezone.",
+        "Schedule a recurring prompt into a connection's agent session. The scheduler never posts the prompt to the external chat. Uses the optional IANA timezone, or the configured cron timezone when omitted.",
         {
             "connection_id": {"type": "string", "minLength": 1},
             "name": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -104,12 +104,17 @@ CRON_TOOLS = [
                 "description": "Five-field Unix cron: minute hour day month weekday. Sunday is 0/7; restricted day-of-month and weekday use OR.",
             },
             "prompt": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "timezone": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Optional IANA timezone, e.g. Asia/Tokyo. Omit to inherit the configured cron timezone. Explicit choices survive default changes and restarts.",
+            },
         },
         ("connection_id", "name", "pattern", "prompt"),
     ),
     ToolSpec(
         "list_jobs",
-        "List id, name, pattern, and active/paused status without prompts.",
+        "List id, name, pattern, effective timezone, and active/paused status without prompts.",
         {
             "connection_id": {
                 "type": "string",
@@ -183,12 +188,13 @@ class Registry:
         if self.config.telegram.connections:
             docs["cron"] = {
                 "timezone": self.config.cron.timezone,
+                "job_timezones": "add_job accepts an optional IANA timezone. Omitted jobs inherit the configured timezone; explicit zones survive default changes and restarts.",
                 "tools": [spec.name for spec in CRON_TOOLS],
                 "routing": "Jobs bind to connection_id and inject prompts into its mapped session. The scheduler never posts prompts or typing indicators to the external chat.",
                 "patterns": "Five-field Unix cron; Sunday 0/7; restricted month-day and weekday use OR.",
-                "jobs": "list_jobs returns id/name/pattern/status only. get_job_prompt, delete_job, pause_job and resume_job accept only id. Status is active or paused.",
+                "jobs": "list_jobs returns id/name/pattern/timezone/status only. get_job_prompt, delete_job, pause_job and resume_job accept only id. Status is active or paused.",
                 "persistence": "Jobs and pause state survive restarts in state_dir/cron.sqlite. Missed downtime/paused occurrences are skipped. Delivery is attempted once per claimed occurrence; it is not exactly-once agent execution.",
-                "metadata": "Cron envelopes use bridge=cron, an occurrence message_id, job_id, job_name, pattern, scheduled_at, and received_at. Original prompt follows the header unchanged.",
+                "metadata": "Cron envelopes use bridge=cron, an occurrence message_id, job_id, job_name, pattern, timezone, scheduled_at, and received_at. Original prompt follows the header unchanged.",
             }
             docs["telegram"] = {
                 "connections": [

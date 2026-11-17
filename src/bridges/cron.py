@@ -105,7 +105,9 @@ class Cron:
         # the callback key too, so a moved state directory remains portable.
         now = datetime.now(UTC)
         for job in self.scheduler.get_jobs():
-            trigger = CrontabTrigger(job.kwargs["pattern"], self.timezone)
+            trigger = CrontabTrigger(
+                job.kwargs["pattern"], job.kwargs.get("timezone") or self.timezone
+            )
             changes = {"args": [self.key, job.id], "trigger": trigger}
             if job.next_run_time is not None:
                 changes["next_run_time"] = trigger.get_next_fire_time(None, now)
@@ -128,27 +130,37 @@ class Cron:
             raise BridgeError("job_not_found", "The scheduled job does not exist.")
         return job
 
-    def add(self, connection_id, name, pattern, prompt):
+    def add(self, connection_id, name, pattern, prompt, timezone=None):
         if connection_id not in self.connection_ids:
             raise BridgeError("unknown_connection", "The connection_id is not configured.")
         if not isinstance(name, str) or not name.strip() or len(name) > 200:
             raise BridgeError("invalid_payload", "Job name must contain 1–200 characters.")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 65536:
             raise BridgeError("invalid_payload", "Job prompt must contain 1–65536 characters.")
+        if timezone is not None:
+            try:
+                if not isinstance(timezone, str) or not timezone:
+                    raise ValueError
+                ZoneInfo(timezone)
+            except (ValueError, KeyError):
+                raise BridgeError("invalid_timezone", "Use a valid IANA job timezone.") from None
         try:
-            trigger = CrontabTrigger(pattern, self.timezone)
+            trigger = CrontabTrigger(pattern, timezone or self.timezone)
         except (ValueError, KeyError, CroniterBadCronError, CroniterBadDateError):
             raise BridgeError(
                 "invalid_pattern", "Use a valid, satisfiable five-field cron expression."
             ) from None
         job_id = uuid4().hex
+        metadata = {"connection_id": connection_id, "pattern": pattern, "prompt": prompt}
+        if timezone is not None:
+            metadata["timezone"] = timezone
         self.scheduler.add_job(
             dispatch,
             trigger=trigger,
             id=job_id,
             name=name,
             args=[self.key, job_id],
-            kwargs={"connection_id": connection_id, "pattern": pattern, "prompt": prompt},
+            kwargs=metadata,
         )
         return {"id": job_id}
 
@@ -158,6 +170,7 @@ class Cron:
                 "id": job.id,
                 "name": job.name,
                 "pattern": job.kwargs["pattern"],
+                "timezone": job.trigger.timezone.key,
                 "status": "paused" if job.next_run_time is None else "active",
             }
             for job in self.scheduler.get_jobs()
@@ -217,6 +230,7 @@ class Cron:
             "job_id": job_id,
             "job_name": job.name,
             "pattern": job.kwargs["pattern"],
+            "timezone": job.trigger.timezone.key,
             "scheduled_at": occurrence,
         }
         text = (

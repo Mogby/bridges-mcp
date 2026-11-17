@@ -6,6 +6,7 @@ import logging
 from websockets.asyncio.client import unix_connect
 from websockets.exceptions import WebSocketException
 
+from .. import __version__
 from ..errors import BridgeError
 from .base import Delivery, ModelInfo, Transport, TurnState
 from .rpc import MAX_FRAME, RPC, RPCRejected
@@ -40,7 +41,7 @@ class AppServer:
             rpc = RPC(socket, on_event=self.event, on_disconnect=self.disconnected)
             try:
                 await rpc.request(
-                    "initialize", {"clientInfo": {"name": "bridges", "version": "0.7.0"}}
+                    "initialize", {"clientInfo": {"name": "bridges", "version": __version__}}
                 )
                 await rpc.send({"method": "initialized"})
             except BaseException:

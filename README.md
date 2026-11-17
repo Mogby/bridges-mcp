@@ -144,9 +144,10 @@ Jobs belong to a connection and submit prompts to its current session, including
 normal automatic creation and stale-pointer recovery. They do not post the prompt
 to external chat or trigger typing indicators.
 
-`add_job(connection_id, name, pattern, prompt)` returns an assigned `id`.
-`list_jobs(connection_id?)` returns only `id`, `name`, `pattern`, and `status`
+`add_job(connection_id, name, pattern, prompt, timezone?)` returns an assigned `id`.
+`list_jobs(connection_id?)` returns only `id`, `name`, `pattern`, `timezone`, and `status`
 (`active` or `paused`). The remaining four scheduling tools accept only `id`.
 
-Set `cron.timezone` to an IANA timezone; default `UTC`. Missed occurrences while
+Set `cron.timezone` to an IANA timezone; default `UTC`. Each job can select its own
+IANA `timezone`; omitted jobs inherit the configured default. Missed occurrences while
 stopped or paused are skipped. See [cron behavior](docs/cron.md).

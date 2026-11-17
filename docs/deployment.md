@@ -78,7 +78,11 @@ the default is `UTC`. Back up `cron.sqlite` while Bridges is stopped, together w
 configuration and `sessions.json`. It contains prompts and trusted serialized job
 records: restrict access and never load an untrusted database. One process owns
 each state directory. Startup preserves job IDs and paused status, applies the
-configured timezone, and advances active jobs past downtime.
+configured timezone to jobs without an explicit override, preserves per-job timezones,
+and advances active jobs past downtime. Existing jobs continue inheriting the configured
+timezone. No database schema migration is required. Before rolling back to a version
+without per-job timezone support, preserve a stopped backup: older code rebuilds all
+triggers using the global timezone and cannot honor explicit job zones.
 
 ## Context tracking storage
 

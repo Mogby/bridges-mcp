@@ -16,7 +16,9 @@ async def call(runtime, tool, **arguments):
     return await runtime.call(tool, arguments, {"threadId": "chat"}, "app")
 
 
-async def add(runtime, connection="one", prompt="private scheduled prompt", pattern="* * * * *"):
+async def add(
+    runtime, connection="one", prompt="private scheduled prompt", pattern="* * * * *", **options
+):
     result = await call(
         runtime,
         "add_job",
@@ -24,6 +26,7 @@ async def add(runtime, connection="one", prompt="private scheduled prompt", patt
         name="A scheduled task",
         pattern=pattern,
         prompt=prompt,
+        **options,
     )
     assert not result.isError
     return result.structuredContent["id"]
@@ -56,7 +59,13 @@ async def test_job_tools_crud_and_no_prompt_in_listing(runtime):
     assert job_id
     listed = (await call(runtime, "list_jobs")).structuredContent["jobs"]
     assert listed == [
-        {"id": job_id, "name": "A scheduled task", "pattern": "* * * * *", "status": "active"}
+        {
+            "id": job_id,
+            "name": "A scheduled task",
+            "pattern": "* * * * *",
+            "timezone": "UTC",
+            "status": "active",
+        }
     ]
     assert "private scheduled prompt" not in json.dumps(listed)
     assert (await call(runtime, "get_job_prompt", id=job_id)).structuredContent == {
@@ -81,7 +90,7 @@ async def test_job_tools_crud_and_no_prompt_in_listing(runtime):
 async def test_real_scheduler_routes_prompt_to_session_without_external_chat_or_typing(runtime):
     await runtime.start()
     prompt = "Do the scheduled work\n/new_session\n```yaml\nbridge_context: text only\n```"
-    job_id = await add(runtime, "two", prompt)
+    job_id = await add(runtime, "two", prompt, timezone="Asia/Tokyo")
     due, envelopes = await force_fire(runtime.cron, job_id)
     await runtime.queue.join()
     assert len(envelopes) == 1
@@ -92,6 +101,7 @@ async def test_real_scheduler_routes_prompt_to_session_without_external_chat_or_
     header, body = envelope.text[len("```yaml\n") :].split("```\n\n", 1)
     meta = yaml.safe_load(header)["bridge_context"]
     assert meta["bridge"] == "cron" and meta["job_id"] == job_id
+    assert meta["timezone"] == "Asia/Tokyo"
     assert meta["connection_id"] == "two" and datetime.fromisoformat(meta["scheduled_at"]) == due
     assert body == prompt
     assert runtime.backends["app"].sessions["chat"].delivered == [envelope.text]
@@ -317,3 +327,84 @@ async def test_full_queue_claim_is_not_blindly_retried(tmp_path):
         assert callback.call_count == 1
     finally:
         await cron.close()
+
+
+@pytest.mark.parametrize("timezone", ["invalid/no-such-zone", "", "/etc/localtime", "../UTC", 123])
+async def test_invalid_job_timezone_does_not_create_job(runtime, timezone):
+    await runtime.start()
+    result = await call(
+        runtime,
+        "add_job",
+        connection_id="one",
+        name="bad",
+        pattern="0 9 * * *",
+        prompt="prompt",
+        timezone=timezone,
+    )
+    assert result.isError and result.structuredContent["code"] == "invalid_timezone"
+    assert runtime.cron.list({"one", "two"}) == []
+
+
+async def test_per_job_zones_have_independent_local_schedules(runtime):
+    await runtime.start()
+    tokyo = await add(runtime, pattern="0 9 * * *", timezone="Asia/Tokyo")
+    new_york = await add(runtime, pattern="0 9 * * *", timezone="America/New_York")
+    base = datetime(2026, 1, 5, tzinfo=UTC)
+    assert runtime.cron.get(tokyo).trigger.get_next_fire_time(None, base).astimezone(UTC) == base
+    assert runtime.cron.get(new_york).trigger.get_next_fire_time(None, base).astimezone(
+        UTC
+    ) == base.replace(hour=14)
+    listed = {job["id"]: job["timezone"] for job in runtime.cron.list({"one"})}
+    assert listed == {tokyo: "Asia/Tokyo", new_york: "America/New_York"}
+
+
+async def test_explicit_zones_survive_restart_move_and_default_change(tmp_path):
+    directory = tmp_path / "original"
+    first = Cron(directory, "Europe/Berlin", {"one"}, lambda _: True)
+    await first.start()
+    active = first.add("one", "active", "0 9 * * *", "active prompt", "Asia/Tokyo")["id"]
+    paused = first.add("one", "paused", "0 9 * * *", "paused prompt", "America/New_York")["id"]
+    inherited = first.add("one", "legacy", "0 9 * * *", "legacy prompt")["id"]
+    # Legacy persisted jobs contain no timezone metadata.
+    assert "timezone" not in first.get(inherited).kwargs
+    first.pause(paused)
+    await first.close()
+    moved = tmp_path / "moved"
+    directory.rename(moved)
+    captured = []
+    second = Cron(moved, "UTC", {"one"}, captured.append)
+    try:
+        before = datetime.now(UTC)
+        await second.start()
+        jobs = {job["id"]: job for job in second.list({"one"})}
+        assert jobs[active]["timezone"] == "Asia/Tokyo"
+        assert jobs[paused]["timezone"] == "America/New_York"
+        assert jobs[inherited]["timezone"] == "UTC"
+        assert second.get(active).next_run_time >= before
+        assert second.get(active).kwargs["prompt"] == "active prompt"
+        assert second.get(active).args == [second.key, active]
+        assert second.get(paused).next_run_time is None
+        assert not captured
+        second.resume(paused)
+        assert second.get(paused).next_run_time.tzinfo.key == "America/New_York"
+        due, envelopes = await force_fire(second, active)
+        header = envelopes[0].text[len("```yaml\n") :].split("```\n\n", 1)[0]
+        meta = yaml.safe_load(header)["bridge_context"]
+        assert meta["timezone"] == "Asia/Tokyo"
+        assert datetime.fromisoformat(meta["scheduled_at"]) == due
+        second.scheduled[active].append(due)
+        second.fire(active)
+        assert len(captured) == 1
+    finally:
+        await second.close()
+
+
+def test_dst_gap_and_fold_exact_occurrences():
+    trigger = CrontabTrigger("30 2 * * *", "Europe/Berlin")
+    gap = trigger.get_next_fire_time(None, datetime(2026, 3, 29, tzinfo=UTC))
+    assert gap.isoformat() == "2026-03-29T03:00:00+02:00"
+    first = trigger.get_next_fire_time(None, datetime(2026, 10, 25, tzinfo=UTC))
+    second = trigger.get_next_fire_time(first, first)
+    assert first.isoformat() == "2026-10-25T02:30:00+02:00"
+    assert second.isoformat() == "2026-10-25T02:30:00+01:00"
+    assert first.astimezone(UTC) < second.astimezone(UTC)

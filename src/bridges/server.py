@@ -1,12 +1,13 @@
 import jsonschema
 from mcp.server.lowlevel import Server
 
+from . import __version__
 from .registry import INSTRUCTIONS
 from .runtime import result
 
 
 def create_server(runtime):
-    server = Server("bridges", version="0.7.0", instructions=INSTRUCTIONS)
+    server = Server("bridges", version=__version__, instructions=INSTRUCTIONS)
 
     @server.list_tools()
     async def list_tools():
