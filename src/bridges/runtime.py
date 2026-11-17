@@ -129,9 +129,10 @@ class Runtime:
                 message = str(exc)
             except (OSError, TimeoutError, ValueError, TypeError, KeyError):
                 message = "Session operation failed; check state before retrying."
-        await self.telegram.clients[connection.bot].call(
+        sent = await self.telegram.clients[connection.bot].call(
             "sendMessage", {**connection.destination(), "text": message}, mutating=True
         )
+        self.telegram.remember_sent(connection, sent)
 
     async def deliver_loop(self):
         while True:
@@ -230,6 +231,17 @@ class Runtime:
                 text = arguments["text"]
                 validate_text(text, 4096, "text")
                 data = await self.telegram.send_text(connection, text)
+            elif name == "telegram_set_reaction":
+                if self.config.sessions[connection.session_id].client != client_id:
+                    raise BridgeError(
+                        "unauthorized", "The connection is not available to this client."
+                    )
+                data = await self.telegram.set_reaction(
+                    connection,
+                    arguments["message_id"],
+                    arguments["reaction"],
+                    arguments.get("is_big", False),
+                )
             elif name == "telegram_send_file":
                 data = await self.telegram.send_file(
                     connection, arguments["path"], arguments.get("caption", "")

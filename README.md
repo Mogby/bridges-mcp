@@ -111,7 +111,7 @@ menu buttons.
 ## MCP tools and messages
 
 With Telegram connections configured, the server exposes `get_protocol_docs`,
-`telegram_send_text`, `telegram_send_images`, `telegram_send_file`,
+`telegram_send_text`, `telegram_send_images`, `telegram_send_file`, `telegram_set_reaction`,
 `telegram_download_images`, and `telegram_download_file`, plus `add_job`,
 `list_jobs`, `get_job_prompt`, `delete_job`, `pause_job`, and `resume_job`. There is no agent-controlled
 `focus` or session-management MCP tool.
@@ -122,7 +122,11 @@ destinations are explicit and do not change session mappings.
 
 Incoming messages carry fenced YAML `bridge_context` metadata and unchanged body
 text. Required fields are `bridge`, `connection_id`, `message_id`, and `received_at`.
-Replies include `reply_to_message_id`. Attachments use bounded, connection-scoped,
+Replies include `reply_to_message_id` and selected `quote` metadata when supplied.
+Reaction events identify the target message and the Telegram update separately.
+See [Telegram events and reactions](docs/telegram.md) for event fields, reaction
+permissions, topic routing, and the set/clear reaction tool.
+Attachments use bounded, connection-scoped,
 ephemeral handles. Audio is not transcribed. File paths are local to the bridge host.
 
 Ordinary assistant prose is not forwarded to Telegram: use send tools and select

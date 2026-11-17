@@ -47,7 +47,7 @@ async def test_http_auth_focus_and_host_identity(runtime):
         listed = (await client.post("/mcp", json=message, headers=headers)).json()["result"][
             "tools"
         ]
-        assert len(listed) == 12
+        assert len(listed) == 13
         assert "focus" not in {tool["name"] for tool in listed}
 
         async def call(name, args, meta):
@@ -69,6 +69,32 @@ async def test_http_auth_focus_and_host_identity(runtime):
             {"threadId": "chat", "client_id": "attacker"},
         )
         assert not result["isError"]
+        invalid_reaction = await call(
+            "telegram_set_reaction",
+            {"connection_id": "one", "message_id": 7, "reaction": {"type": "paid"}},
+            {"threadId": "chat"},
+        )
+        assert invalid_reaction["isError"]
+        sent_reaction = await call(
+            "telegram_set_reaction",
+            {"connection_id": "one", "message_id": 7, "reaction": {"type": "emoji", "emoji": "👍"}},
+            {"threadId": "chat"},
+        )
+        assert not sent_reaction["isError"]
+        assert sent_reaction["structuredContent"] == {
+            "message_id": 7,
+            "reaction": {"type": "emoji", "emoji": "👍"},
+            "applied": True,
+        }
+        assert runtime.telegram.clients["main"].call.call_args.args == (
+            "setMessageReaction",
+            {
+                "chat_id": "1",
+                "message_id": 7,
+                "reaction": [{"type": "emoji", "emoji": "👍"}],
+                "is_big": False,
+            },
+        )
         assert (await call("telegram_send_text", {"connection_id": "one", "text": "hi"}, {}))[
             "isError"
         ]

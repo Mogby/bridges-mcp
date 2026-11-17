@@ -69,6 +69,7 @@ async def test_outbound_markdown_preserved_for_text_and_captions(config, tmp_pat
     assert calls[0].args[1]["text"] == markdown
     assert calls[1].args[1]["caption"] == calls[2].args[1]["caption"] == markdown
     assert calls[3].args[1]["caption"] == ""
+    assert bridge.message_routes.matches("main", connection, 10)
 
 
 async def test_image_batch_partial_result(config, tmp_path):
@@ -87,6 +88,7 @@ async def test_image_batch_partial_result(config, tmp_path):
     assert api.call.call_count == 2
     assert api.call.call_args_list[0].args[1]["caption"] == "caption"
     assert api.call.call_args_list[1].args[1]["caption"] == ""
+    assert bridge.message_routes.matches("main", config.telegram.connections["one"], 10)
 
 
 async def test_batch_validates_all_files_before_sending(config, tmp_path):
@@ -171,7 +173,12 @@ async def test_poller_offsets_duplicates_and_unconfigured_chats(config):
     await bridge.start()
     await asyncio.wait_for(ready.wait(), 1)
     assert len(bridge.tasks) == 1 and len(envelopes) == 2
-    assert requests[1]["offset"] == 8 and requests[0]["allowed_updates"] == ["message"]
+    assert requests[1]["offset"] == 8
+    assert requests[0]["allowed_updates"] == [
+        "message",
+        "message_reaction",
+        "message_reaction_count",
+    ]
     await bridge.close()
 
 

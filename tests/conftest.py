@@ -111,6 +111,8 @@ async def runtime(config):
             return {"username": "TestBot"}
         if method == "setMyCommands":
             return True
+        if method == "setMessageReaction":
+            return True
         if method == "getUpdates":
             await asyncio.Event().wait()
         return {"message_id": 7}

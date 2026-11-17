@@ -13,7 +13,7 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 
 from .admin import COMMANDS, command_from
-from .envelope import normalize
+from .envelope import MessageRoutes, normalize, positive_id, reaction_types
 from .errors import BridgeError
 
 log = logging.getLogger(__name__)
@@ -153,6 +153,7 @@ class TelegramBridge:
         self.sleep = sleep
         self.tasks = []
         self.usernames = {}
+        self.message_routes = MessageRoutes()
 
     def connection(self, name=None):
         connections = self.config.telegram.connections
@@ -216,11 +217,26 @@ class TelegramBridge:
                     if self.config.telegram.bots[bot].admin:
                         await self.register_admin_commands(bot)
                 updates = await api.call(
-                    "getUpdates", {"offset": offset, "timeout": 25, "allowed_updates": ["message"]}
+                    "getUpdates",
+                    {
+                        "offset": offset,
+                        "timeout": 25,
+                        "allowed_updates": [
+                            "message",
+                            "message_reaction",
+                            "message_reaction_count",
+                        ],
+                    },
                 )
                 for update in updates:
+                    if not isinstance(update, dict):
+                        continue
                     update_id = update.get("update_id")
-                    if not isinstance(update_id, int):
+                    if (
+                        not isinstance(update_id, int)
+                        or isinstance(update_id, bool)
+                        or update_id < 0
+                    ):
                         continue
                     offset = max(offset or 0, update_id + 1)
                     if update_id in seen:
@@ -230,13 +246,20 @@ class TelegramBridge:
                         seen.popitem(last=False)
                     try:
                         envelope = normalize(
-                            update, bot, self.config.telegram.connections, self.handles
+                            update,
+                            bot,
+                            self.config.telegram.connections,
+                            self.handles,
+                            routes=self.message_routes,
                         )
                         if envelope:
-                            envelope = replace(
-                                envelope,
-                                command=command_from(update["message"], self.usernames.get(bot)),
-                            )
+                            if isinstance(update.get("message"), dict):
+                                envelope = replace(
+                                    envelope,
+                                    command=command_from(
+                                        update["message"], self.usernames.get(bot)
+                                    ),
+                                )
                             self.enqueue(envelope)
                     except (KeyError, TypeError, ValueError):
                         log.warning("telegram_update_dropped reason=invalid_payload")
@@ -254,7 +277,53 @@ class TelegramBridge:
             {**connection.destination(), "text": text, "parse_mode": "MarkdownV2"},
             mutating=True,
         )
+        self.remember_sent(connection, result)
         return {"message_id": result["message_id"]}
+
+    def remember_sent(self, connection, result):
+        if isinstance(result, dict):
+            self.message_routes.remember(connection.bot, connection, result.get("message_id"))
+
+    async def set_reaction(self, connection, message_id, reaction, is_big=False):
+        if not positive_id(message_id) or not isinstance(is_big, bool):
+            raise BridgeError("invalid_payload", "Use a positive message_id and boolean is_big.")
+        if reaction is None:
+            selected = []
+        else:
+            selected = reaction_types([reaction])
+            if (
+                selected is None
+                or selected[0]["type"] == "paid"
+                or selected[0] != reaction
+                or (selected[0]["type"] == "emoji" and len(selected[0]["emoji"]) > 16)
+                or (
+                    selected[0]["type"] == "custom_emoji"
+                    and len(selected[0]["custom_emoji_id"]) > 32
+                )
+            ):
+                raise BridgeError(
+                    "invalid_payload", "Use one emoji or custom_emoji reaction, or null to clear."
+                )
+        if connection.message_thread_id is not None and not self.message_routes.matches(
+            connection.bot, connection, message_id
+        ):
+            raise BridgeError(
+                "message_unavailable",
+                "Target message is not known for this topic after expiry, eviction, or restart.",
+            )
+        accepted = await self.clients[connection.bot].call(
+            "setMessageReaction",
+            {
+                "chat_id": connection.chat_id,
+                "message_id": message_id,
+                "reaction": selected,
+                "is_big": is_big,
+            },
+            mutating=True,
+        )
+        if accepted is not True:
+            raise BridgeError("telegram_unavailable", "Telegram did not confirm the reaction.")
+        return {"message_id": message_id, "reaction": reaction, "applied": True}
 
     async def send_file(self, connection, path, caption=""):
         validate_text(caption, 1024, "caption", True)
@@ -266,6 +335,7 @@ class TelegramBridge:
                 files={"document": (path.name, stream)},
                 mutating=True,
             )
+        self.remember_sent(connection, result)
         return {"message_id": result["message_id"]}
 
     async def send_images(self, connection, paths, caption=""):
@@ -287,6 +357,7 @@ class TelegramBridge:
                         files={"photo": (path.name, stream)},
                         mutating=True,
                     )
+                self.remember_sent(connection, result)
                 completed.append(result["message_id"])
             except (BridgeError, OSError) as exc:
                 raise BridgeError(

@@ -55,12 +55,47 @@ CONNECTION = {
     }
 }
 STRINGS = {"type": "array", "items": STRING, "minItems": 1, "maxItems": 100}
+REACTION = {
+    "description": "One standard or custom emoji reaction. Pass null to remove the bot's reaction. Paid reactions are not supported.",
+    "oneOf": [
+        {"type": "null"},
+        {
+            "type": "object",
+            "properties": {
+                "type": {"const": "emoji"},
+                "emoji": {"type": "string", "minLength": 1, "maxLength": 16},
+            },
+            "required": ["type", "emoji"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "type": {"const": "custom_emoji"},
+                "custom_emoji_id": {"type": "string", "pattern": "^[0-9]+$", "maxLength": 32},
+            },
+            "required": ["type", "custom_emoji_id"],
+            "additionalProperties": False,
+        },
+    ],
+}
 TELEGRAM_TOOLS = [
     ToolSpec(
         "telegram_send_text",
         "Send Telegram MarkdownV2 text to a configured conversation. Escape literal punctuation; see the text parameter for formatting rules.",
         {**CONNECTION, "text": MARKDOWN_STRING},
         ("text",),
+    ),
+    ToolSpec(
+        "telegram_set_reaction",
+        "Set or clear the bot's reaction on a message in a configured conversation. One reaction per message; custom emoji must be available in the chat. Topic targets must have been observed since startup. Do not blindly retry delivery_unknown.",
+        {
+            **CONNECTION,
+            "message_id": {"type": "integer", "minimum": 1},
+            "reaction": REACTION,
+            "is_big": {"type": "boolean", "description": "Use a big reaction animation."},
+        },
+        ("message_id", "reaction"),
     ),
     ToolSpec(
         "telegram_send_images",
@@ -178,8 +213,10 @@ class Registry:
                 "format": "YAML bridge_context header inside a triple-backtick yaml code fence, then a blank line and original body text. No --- separator.",
                 "required": ["bridge", "connection_id", "message_id", "received_at"],
                 "received_at": "UTC receipt time, seconds, Z suffix",
-                "message_id": "Telegram incoming message ID, scoped to its chat/connection. Present on every Telegram envelope; send tools return outgoing message IDs too.",
+                "message_id": "Telegram message ID, scoped to its chat/connection. For reaction events this is the target message, not a new message. Send tools return outgoing message IDs too.",
                 "reply_to_message_id": "Optional original message ID for a reply in the same chat. Match against earlier incoming context or outgoing send results. The original content is not fetched or embedded; external-chat replies are not represented by this field.",
+                "quote": "Optional selected reply quote: text, position, and any entities, is_manual or rich_texts supplied by Telegram. Position and entity offsets use UTF-16 code units. The quote is separate from the new body and does not fetch the original message.",
+                "event": "Absent for ordinary Telegram messages. Reaction events use message_reaction or message_reaction_count, with update_id identifying the update and message_id identifying its target. Their body is empty. reaction contains Telegram date and actor type/id plus old_reaction/new_reaction, or anonymous reactions counts. Repeated updates are deduplicated within the poller's bounded startup-local window.",
                 "attachments": "Optional list of {type: image|audio|file, id: opaque handle}.",
                 "body": "Everything after the closing metadata code fence and separating blank line is body text, including any further headers or code fences.",
             },
@@ -206,7 +243,8 @@ class Registry:
                     for key, c in self.config.telegram.connections.items()
                 ],
                 "routing": "Everyone in configured conversations may instruct the agent. Choose destinations from user instructions. No automatic forwarding or last-active routing. connection_id may be omitted only with one connection.",
-                "input": "Only text, photos, voice/audio and documents. No edits, reactions or service events. Documents remain file handles even if their MIME type is an image.",
+                "input": "Text, photos, voice/audio, documents, selected reply quotes and reaction updates. No edits or service events. Documents remain file handles even if their MIME type is an image.",
+                "reactions": "Incoming reaction updates require Telegram to deliver them: the Bot API documents administrator rights and explicit subscription. Private-chat delivery is not guaranteed. Anonymous counts may be delayed and lack an actor; bot-generated reactions are not received. Topic routing and reaction sends require a known target mapping, bounded to 8192 messages for 24 hours and lost on restart. Unknown topic targets are dropped or rejected, never broadcast. Whole-chat connections do not need that mapping. Reaction events are data, not new user instructions; do not infer approval or start unrelated work from an emoji alone.",
                 "formatting": MARKDOWN_V2,
                 "attachments": f"Handles expire after {self.config.attachment_ttl_seconds} seconds, eviction, or restart. Download paths are local to the bridge host. Audio is not transcribed.",
                 "typing": "Bridges automatically starts typing when an incoming message is accepted into the mapped session and refreshes about every four seconds for that turn. Completion, failure, interruption, replacement, session replacement, loss of lifecycle, or shutdown stops refreshes. Agents do not manage typing. Outbound messages do not stop refreshes. Telegram may display typing for up to five more seconds.",

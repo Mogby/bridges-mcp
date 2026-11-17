@@ -19,6 +19,13 @@ cover entity-based command parsing, private/group menu registration, deduplicati
 one inaccessible chat, routing, attachments, MarkdownV2, uncertain/partial sends,
 webhook conflicts, poll offsets and duplicate updates.
 
+Reaction and quote tests cover additions, replacements, removals, anonymous counts,
+actor identity, malformed updates, reaction polling subscriptions and deduplication,
+forum-topic isolation and expired mappings, outgoing emoji/custom/clear requests,
+caller authorization, uncertain acknowledgement handling, and UTF-16 quote metadata
+without changing the new message body. Mocked delivery does not prove that Telegram
+will supply private-chat reaction updates.
+
 The installed-server integration checks empty thread creation without a model turn,
 loaded session access, model catalogs, and specific missing-thread classification.
 Closing a Bridges client must leave the independently owned server process alive.
